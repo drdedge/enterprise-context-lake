@@ -1,0 +1,200 @@
+SHARED CONTEXT AND MEMORY FOR INVESTMENT APPLICATIONS
+Architecture decision brief | 21 November 2026 | Proposed pilot
+
+DECISION
+
+Pilot Codrihub Memora as the browser workspace for a Git-backed Markdown vault.
+Use GitLab to review proposed changes and publish approved versions. Give
+high-volume skills a small, versioned fund lookup they can hold in memory.
+Keep Arize Phoenix for traces and experiments. The pilot should establish
+whether an operations user can resolve one real discrepancy from the graph
+and whether three existing skills subsequently use that decision.
+
+The main uncertainty is whether Memora’s note-and-link interface is expressive
+enough for business users. Its public demo groups notes by folder. Switching
+the same graph between app and topic, enforcing human access by Entra group,
+and submitting browser edits as GitLab merge requests require verification
+or integration. No candidate was tested end to end during this research.
+
+1. WHAT THE FIRM WANTS TO SHARE
+
+User memory          Preferences that follow a person across relevant apps.
+User × skill memory  How one person wants a specific task performed.
+Skill memory         Reusable lessons about a tool, feed or procedure.
+Project memory       Decisions and exceptions shared within an engagement.
+Firm knowledge       Approved definitions, fund identities and mappings.
+Run context          Inputs, date and provisional decisions for one execution.
+
+For each item distinguish who may see it, where it applies, what it concerns,
+and where the evidence came from. A project preference may change a report’s
+presentation. Changing a fund’s legal identity requires an evidenced mapping
+decision. Apps can submit findings before any existing skill needs them.
+
+2. WHY THE RECOMMENDATION CHANGED
+
+Orchard Core + CrestApps fits structured editorial work, SQL Server, S3 and
+agent integration. Hindsight fits persistent agent memory. Neither established
+the specific browser experience that became central to the brief.
+
+Phoenix already provides a prompt registry, traces, datasets, experiments and,
+on suitable versions, PXI and MCP. It can help establish which runs used a
+mapping and whether an SOP improved outcomes. The researched self-hosted
+features did not establish an editable firm-wide relationship map. The
+installed version and configuration were not inspected.
+
+CommonGraph is the packaged alternative when users need typed relationships
+and direct edge editing. Its documented deployment uses PostgreSQL and
+multiple services. Reactodia is the strongest custom-UI fallback when the
+firm wants a purpose-built evidence panel and app/topic views over its own
+API. Its authoring playground demonstrates the interaction using in-memory
+data. Production persistence, authorisation and curation would be ours.
+Semantica merits consideration if provenance and duplicate review dominate.
+
+The later preference for Git-owned Markdown changes the choice. Memora puts
+the vault, a visual browser editor, Git history, an assistant and MCP access
+in one self-hosted service. Its current licence is AGPL-3.0-or-later. Server
+state uses embedded SQLite. Git history alone does not implement the proposed
+GitLab approval process. OpenWiki is an optional extraction tool for mining
+source-backed claims from existing skill repositories. Start with it only if
+extracting the first three skills’ mappings by hand proves expensive.
+
+3. PROPOSED ARCHITECTURE
+
+Diagram A — Contributions, review and publication
+
+  Staff using browser     Apps and skills     Background curator
+          |                      |                    |
+          +--------- scoped observations and proposed edits -------+
+                                                                   |
+                                           Inbox / draft workspace
+                                                       |
+                                     GitLab branch + merge request
+                                                       |
+                                    Business owner reviews evidence
+                                                       |
+                                        Approved Git commit (SHA)
+                                                 /           \
+                              Published vault + index       Lookup snapshot
+                              for graph and search          for skill workers
+
+The browser edit path must target a draft. Readers stay pinned to an approved
+revision until publication succeeds. Proposed integration work includes
+routing edits into GitLab, building the manifest, and switching revisions
+atomically. S3 can distribute immutable artefacts. SQL Server remains an
+option if structured editing or stewardship requirements outgrow the vault.
+
+Diagram B — Reading approved context
+
+  Browser user / agent  --> authorised API or MCP --> scoped manifest
+                                                     |    |     |
+                                                  filter read  neighbours
+                                                     |
+                                               local vault search
+
+  Skill worker --> load authorised snapshot on start or refresh
+               --> in-memory lookup by code, purpose and effective date
+               --> record mapping ID and commit SHA on the Phoenix trace
+
+Use the same record identifiers in both paths. Keep private notes and even
+their titles out of unauthorised manifests, graph neighbours and snapshots.
+Measure expiry and revocation for cached copies. A Git folder or frontmatter
+scope is useful metadata. Enforce access before retrieval and publication.
+
+4. WHAT THE FUND MAP SHOULD LET SOMEONE DO
+
+Search for Fund IV. In the topic view, expand its family, reporting group,
+vehicles and administrator codes. In the app view, see which CRM, reporting
+and cash-flow skills consume each record. Selecting a disputed mapping should
+show competing claims, source passages, effective dates and affected skills.
+The assistant should answer questions about that selection with evidence.
+
+Illustrative graph — no actual fund data
+
+  CRM skill       --> Fund IV family
+  Reporting skill --> Fund IV consolidated reporting group
+  Cash-flow skill --> Mapping M-1042 <-- Administrator code IV-A
+                            |
+                            +--> Feeder A  [approved for date and purpose]
+                            +--> Feeder B  [competing claim; review evidence]
+
+Give a disputed mapping its own note so a user can select it, see its
+evidence and edit it even in a note-based graph. Suggested fields are a
+stable ID, aliases, source system, purpose, target entity, valid-from/to,
+status, scope, owner, source references and consuming skills. Keep both
+claims when evidence is incomplete. Distinguish different reporting purposes
+from two incompatible answers for the same code, purpose and date. Replace
+hard-coded lookups in the skills once the shared version is accepted.
+
+5. PERFORMANCE EVIDENCE AND WHAT TO MEASURE
+
+The conversation included a user-supplied benchmark of roughly 1 KB generated
+notes on two vCPUs with a warm disk cache. These timings were not independently
+reproduced and were not measured against Memora.
+
+Operation                     10k notes      50k notes     200k notes
+Whole-vault grep                 37 ms         142 ms         542 ms
+One topic folder                  7 ms          11 ms          30 ms
+In-memory metadata filter      0.01 ms        0.17 ms         1.1 ms
+Grep filtered subset              6 ms           6 ms          10 ms
+Load manifest                    53 ms          0.3 s          1.9 s
+
+The filtered candidate counts and concurrent-load results are unknown.
+Benchmark exact fund lookups, broad topic searches and two-hop graph reads
+under realistic bursts. Compare embedded skill data, an in-memory snapshot,
+a pooled and indexed SQL lookup, and scoped file search. Record cold and warm
+p50/p95/p99 latency, throughput, CPU, candidate count, database calls and
+time for edits or revocations to reach workers. Measure browser rendering
+separately. An exact lookup and an open-ended research query have different
+costs. Start with aliases and lexical search; add semantic retrieval only if
+evaluation shows that relevant evidence is being missed.
+
+6. PILOT ACCEPTANCE AND DECISION GATES
+
+Use three existing skills, one fund-operations reviewer, one historical
+reporting date and one restricted evidence source. Agree latency and freshness
+targets against the current embedded implementation before testing.
+
+[ ] A reviewer can find and distinguish a duplicate, a genuine conflict,
+    a valid difference of scope, a historical change and an unresolved case.
+[ ] The reviewer can inspect the evidence, propose a correction and identify
+    its consumers from the browser. Record every step requiring developer help.
+[ ] All three skills adopt the approved version. An earlier run remains
+    reproducible using its recorded revision. A rejected edit stays unpublished.
+[ ] An unauthorised user cannot infer restricted content via search, backlinks,
+    graph labels, generated summaries or a previously cached snapshot.
+[ ] Under concurrent load, the agreed latency, freshness and revocation
+    targets hold. Recovery from a failed publication retains a usable version.
+[ ] A curator drafts one SOP from recurring findings. Use Phoenix to compare
+    runs with and without it on held-out cases, holding model, tools and inputs
+    constant. Score correctness, source selection, appropriate abstention and
+    cases where the skill should stay inactive.
+
+Adopt Memora if staff can complete the review and the access model holds.
+If graph interaction is the blocker, retain Git publishing and snapshot
+serving, and compare CommonGraph’s edge editor with a Reactodia front end.
+If serving latency is the blocker, fix the read path independently of the UI.
+
+REFERENCES AND VISUAL EXAMPLES
+
+Memora product, code and interactive graph
+https://github.com/Codrihub/memora
+https://memora.codrihub.tech/brain
+
+CommonGraph editing and deployment
+https://commongraph.org/user-guide/content.html
+https://commongraph.org/deployment/docker-compose.html
+
+Reactodia graph-authoring playground
+https://reactodia.github.io/playground/graph-authoring/
+
+Semantica Explorer and LangChain OpenWiki
+https://github.com/semantica-agi/semantica/tree/main/explorer
+https://github.com/langchain-ai/openwiki
+
+Self-hosted Phoenix and evaluation datasets
+https://github.com/Arize-ai/phoenix
+https://arize.com/docs/phoenix/learn/datasets-and-experiments/datasets-concepts
+
+Anthropic on memory hierarchies and offline consolidation
+https://www.anthropic.com/research/components-of-agent-memory
+https://platform.claude.com/cookbook/managed-agents-cma-dreaming-with-a-dynamic-workflow
