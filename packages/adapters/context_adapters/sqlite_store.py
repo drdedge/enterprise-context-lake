@@ -1,0 +1,2692 @@
+"""SQLAlchemy 2.x async bitemporal relational StorePort adapter with FTS5 lexical index (ADR-002)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Sequence
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Float,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    delete,
+    event,
+    select,
+    text,
+)
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool, StaticPool
+
+from context_core.bitemporal import (
+    claim_collision_key,
+    claims_conflict,
+    is_claim_visible,
+    is_identifier_visible,
+    windows_overlap,
+)
+from context_core.compression import ensure_utc, format_utc, utc_now
+from context_core.exceptions import (
+    AuthenticationError,
+    NotFoundError,
+    OptimisticConcurrencyError,
+    ValidationError,
+)
+from context_core.models import (
+    Claim,
+    ClaimACL,
+    ClaimCreateInput,
+    ClaimFacets,
+    ClaimUpdateInput,
+    ClaimWriteResult,
+    ConflictResolutionInput,
+    ConflictSet,
+    ContextAssemblyReceipt,
+    Coverage,
+    CuratorDraftPatch,
+    Entity,
+    EntityIdentifier,
+    EntityLineageEvent,
+    EntityType,
+    KnowledgeItem,
+    MemoryRecord,
+    MemoryUpsertInput,
+    PolicyEpochState,
+    Position,
+    Principal,
+    Provenance,
+    SkillBinding,
+    StalenessReport,
+    Topic,
+    TopicAttachment,
+    TopicPatchInput,
+    WallSide,
+    WatchlistRecord,
+    WatchlistUpdateInput,
+)
+from context_core.policy import PolicyEngine, sanitize_uri_secrets
+from context_adapters._store_common import (
+    apply_topic_patch,
+    check_toctou_epoch,
+    compute_sha_staleness,
+    compute_watchlist_alerts,
+    prepare_incoming_claim,
+)
+
+# ---------------------------------------------------------------------------
+# Portable SQLAlchemy Core Schema (SQLite / SQL Server / Postgres compatible)
+# ---------------------------------------------------------------------------
+
+metadata = MetaData()
+
+t_system_epochs = Table(
+    "system_epochs",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("data_epoch", Integer, nullable=False, default=1),
+    Column("policy_epoch", Integer, nullable=False, default=1),
+    Column("updated_at", String(64), nullable=False),
+    Column("last_reason", Text, nullable=True),
+    Column("last_actor", String(128), nullable=True),
+)
+
+t_revoked_principals = Table(
+    "revoked_principals",
+    metadata,
+    Column("user_id", String(128), primary_key=True),
+    Column("reason", Text, nullable=False),
+    Column("actor", String(128), nullable=False),
+    Column("revoked_at", String(64), nullable=False),
+)
+
+t_entities = Table(
+    "entities",
+    metadata,
+    Column("entity_id", String(128), primary_key=True),
+    Column("entity_type", String(64), nullable=False, index=True),
+    Column("canonical_key", String(256), nullable=False, unique=True, index=True),
+    Column("display_name", String(512), nullable=False),
+    Column("aliases_json", Text, nullable=False),
+    Column("description", Text, nullable=False),
+    Column("owner_group", String(128), nullable=False),
+    Column("wall_side", String(32), nullable=False, index=True),
+    Column("read_acl_groups_json", Text, nullable=False),
+    Column("write_acl_groups_json", Text, nullable=False),
+    Column("attributes_json", Text, nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+)
+
+t_entity_identifiers = Table(
+    "entity_identifiers",
+    metadata,
+    Column("id", String(128), primary_key=True),
+    Column("entity_id", String(128), nullable=False, index=True),
+    Column("scheme", String(64), nullable=False, index=True),
+    Column("identifier_value", String(256), nullable=False, index=True),
+    Column("authority", String(128), nullable=False),
+    Column("is_primary", Boolean, nullable=False),
+    Column("valid_from", String(64), nullable=False),
+    Column("valid_to", String(64), nullable=True),
+    Column("recorded_at", String(64), nullable=False),
+    Column("superseded_at", String(64), nullable=True),
+)
+
+t_entity_lineage_events = Table(
+    "entity_lineage_events",
+    metadata,
+    Column("event_id", String(128), primary_key=True),
+    Column("source_entity_id", String(128), nullable=False, index=True),
+    Column("target_entity_id", String(128), nullable=False, index=True),
+    Column("event_type", String(64), nullable=False),
+    Column("effective_date", String(64), nullable=False),
+    Column("recorded_at", String(64), nullable=False),
+    Column("summary", Text, nullable=False),
+    Column("evidence_uri", Text, nullable=True),
+    Column("evidence_acl_groups_json", Text, nullable=False),
+    Column("wall_side", String(32), nullable=False),
+    Column("read_acl_groups_json", Text, nullable=False),
+)
+
+t_positions = Table(
+    "positions",
+    metadata,
+    Column("position_id", String(128), primary_key=True),
+    Column("vehicle_entity_id", String(128), nullable=False, index=True),
+    Column("instrument_entity_id", String(128), nullable=False, index=True),
+    Column("issuer_entity_id", String(128), nullable=False, index=True),
+    Column("position_type", String(64), nullable=False),
+    Column("quantity", Float, nullable=True),
+    Column("market_value", Float, nullable=True),
+    Column("currency", String(16), nullable=False),
+    Column("weight_bps", Float, nullable=True),
+    Column("as_of_date", String(32), nullable=False),
+    Column("recorded_at", String(64), nullable=False),
+    Column("source_system", String(128), nullable=False),
+    Column("wall_side", String(32), nullable=False),
+    Column("read_acl_groups_json", Text, nullable=False),
+)
+
+t_coverages = Table(
+    "coverages",
+    metadata,
+    Column("coverage_id", String(128), primary_key=True),
+    Column("analyst_entity_id", String(128), nullable=False, index=True),
+    Column("issuer_entity_id", String(128), nullable=False, index=True),
+    Column("coverage_role", String(64), nullable=False),
+    Column("coverage_status", String(32), nullable=False, index=True),
+    Column("valid_from", String(64), nullable=False),
+    Column("valid_to", String(64), nullable=True),
+    Column("wall_side", String(32), nullable=False),
+    Column("read_acl_groups_json", Text, nullable=False),
+)
+
+t_skill_bindings = Table(
+    "skill_bindings",
+    metadata,
+    Column("binding_id", String(128), primary_key=True),
+    Column("skill_entity_id", String(128), nullable=False, index=True),
+    Column("target_entity_id", String(128), nullable=False, index=True),
+    Column("mapping_purpose", String(128), nullable=False),
+    Column("read_mode", String(64), nullable=False),
+    Column("required_predicates_json", Text, nullable=False),
+    Column("active", Boolean, nullable=False),
+)
+
+t_claims = Table(
+    "claims",
+    metadata,
+    Column("claim_id", String(128), primary_key=True),
+    Column("subject_id", String(128), nullable=False, index=True),
+    Column("predicate", String(128), nullable=False, index=True),
+    Column("object_value", Text, nullable=False),
+    Column("object_entity_id", String(128), nullable=True, index=True),
+    Column("context_purpose", String(128), nullable=False, index=True),
+    Column("scope_type", String(32), nullable=False, index=True),
+    Column("scope_id", String(256), nullable=False),
+    Column("channel", String(32), nullable=False),
+    Column("epistemic_status", String(64), nullable=False, index=True),
+    Column("kind", String(64), nullable=True),
+    Column("is_mandatory", Boolean, nullable=False),
+    Column("facets_json", Text, nullable=False),
+    Column("provenance_json", Text, nullable=False),
+    Column("wall_side", String(32), nullable=False, index=True),
+    Column("acl_json", Text, nullable=False),
+    Column("valid_from", String(64), nullable=False, index=True),
+    Column("valid_to", String(64), nullable=True),
+    Column("recorded_at", String(64), nullable=False, index=True),
+    Column("superseded_at", String(64), nullable=True),
+    Column("superseded_by", String(128), nullable=True),
+    Column("created_by", String(128), nullable=False),
+)
+
+t_conflict_sets = Table(
+    "conflict_sets",
+    metadata,
+    Column("conflict_set_id", String(128), primary_key=True),
+    Column("subject_id", String(128), nullable=False, index=True),
+    Column("predicate", String(128), nullable=False),
+    Column("context_purpose", String(128), nullable=False),
+    Column("scope_type", String(32), nullable=False),
+    Column("scope_id", String(256), nullable=False),
+    Column("status", String(32), nullable=False, index=True),
+    Column("winning_claim_id", String(128), nullable=True),
+    Column("resolution_rationale", Text, nullable=True),
+    Column("resolved_by", String(128), nullable=True),
+    Column("resolved_at", String(64), nullable=True),
+    Column("created_at", String(64), nullable=False),
+    Column("summary", Text, nullable=False),
+)
+
+t_conflict_set_members = Table(
+    "conflict_set_members",
+    metadata,
+    Column("conflict_set_id", String(128), primary_key=True),
+    Column("claim_id", String(128), primary_key=True),
+)
+
+t_topics = Table(
+    "topics",
+    metadata,
+    Column("topic_id", String(128), primary_key=True),
+    Column("slug", String(128), nullable=False, unique=True, index=True),
+    Column("pref_label", String(256), nullable=False),
+    Column("alt_labels_json", Text, nullable=False),
+    Column("broader_topic_id", String(128), nullable=True),
+    Column("narrower_topic_ids_json", Text, nullable=False),
+    Column("related_topic_ids_json", Text, nullable=False),
+    Column("topic_kind", String(64), nullable=False),
+    Column("merged_into_topic_id", String(128), nullable=True),
+    Column("owner_group", String(128), nullable=False),
+    Column("status", String(32), nullable=False),
+)
+
+t_topic_attachments = Table(
+    "topic_attachments",
+    metadata,
+    Column("attachment_id", String(128), primary_key=True),
+    Column("topic_id", String(128), nullable=False, index=True),
+    Column("target_type", String(64), nullable=False),
+    Column("target_id", String(128), nullable=False, index=True),
+    Column("attachment_source", String(32), nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("wall_side", String(32), nullable=False),
+    Column("read_acl_groups_json", Text, nullable=False),
+)
+
+t_knowledge_items = Table(
+    "knowledge_items",
+    metadata,
+    Column("item_id", String(128), primary_key=True),
+    Column("knowledge_kind", String(64), nullable=False, index=True),
+    Column("display_name", String(512), nullable=False),
+    Column("slug", String(256), nullable=False),
+    Column("source_path", Text, nullable=False),
+    Column("body_markdown", Text, nullable=False),
+    Column("wall_side", String(32), nullable=False),
+    Column("read_acl_groups_json", Text, nullable=False),
+    Column("write_acl_groups_json", Text, nullable=False),
+    Column("topics_json", Text, nullable=False),
+    Column("related_entities_json", Text, nullable=False),
+    Column("metadata_json", Text, nullable=False),
+    Column("content_sha256", String(128), nullable=True),
+    Column("valid_from", String(64), nullable=False),
+    Column("recorded_at", String(64), nullable=False),
+    Column("okf_version", String(16), nullable=False),
+)
+
+t_curator_patches = Table(
+    "curator_patches",
+    metadata,
+    Column("patch_id", String(128), primary_key=True),
+    Column("wall_side", String(32), nullable=False),
+    Column("read_acl_groups_json", Text, nullable=False),
+    Column("target_type", String(64), nullable=False),
+    Column("target_id", String(128), nullable=False),
+    Column("title", String(512), nullable=False),
+    Column("rationale", Text, nullable=False),
+    Column("unified_diff", Text, nullable=False),
+    Column("proposed_changes_json", Text, nullable=False),
+    Column("source_claim_ids_json", Text, nullable=False),
+    Column("stale_evidence_paths_json", Text, nullable=False),
+    Column("status", String(64), nullable=False, index=True),
+    Column("created_at", String(64), nullable=False),
+    Column("created_by", String(128), nullable=False),
+    Column("reviewed_by", String(128), nullable=True),
+    Column("reviewed_at", String(64), nullable=True),
+)
+
+t_personal_memories = Table(
+    "personal_memories",
+    metadata,
+    Column("memory_id", String(128), primary_key=True),
+    Column("user_id", String(128), nullable=False, index=True),
+    Column("scope_type", String(32), nullable=False),
+    Column("skill_id", String(128), nullable=True),
+    Column("key", String(256), nullable=False),
+    Column("content", Text, nullable=False),
+    Column("tags_json", Text, nullable=False),
+    Column("linked_entity_ids_json", Text, nullable=False),
+    Column("linked_topic_ids_json", Text, nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+)
+
+t_personal_watchlists = Table(
+    "personal_watchlists",
+    metadata,
+    Column("user_id", String(128), primary_key=True),
+    Column("entity_ids_json", Text, nullable=False),
+    Column("topic_ids_json", Text, nullable=False),
+    Column("source_ids_json", Text, nullable=False),
+    Column("updated_at", String(64), nullable=False),
+)
+
+t_receipts = Table(
+    "receipts",
+    metadata,
+    Column("receipt_id", String(128), primary_key=True),
+    Column("principal_id", String(128), nullable=False, index=True),
+    Column("payload_json", Text, nullable=False),
+    Column("created_at", String(64), nullable=False),
+)
+
+
+def _sqlite_url(db_path: str | Path | None) -> str:
+    if db_path is None or str(db_path) == ":memory:":
+        return "sqlite+aiosqlite:///:memory:"
+    p = Path(db_path).resolve()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite+aiosqlite:///{p.as_posix()}"
+
+
+class SqliteBitemporalStore:
+    """SQLAlchemy 2.x async bitemporal store implementing StorePort + FTS5 + Windows lock hygiene."""
+
+    def __init__(
+        self,
+        db_path: str | Path | None = ":memory:",
+        *,
+        database_url: str | None = None,
+        policy: PolicyEngine | None = None,
+        repo_root: Path | None = None,
+    ) -> None:
+        self.db_path = db_path
+        self.database_url = database_url or _sqlite_url(db_path)
+        self.policy = policy or PolicyEngine()
+        self.repo_root = repo_root or Path(__file__).resolve().parents[3]
+        self._is_sqlite = self.database_url.startswith("sqlite")
+        self._is_memory = ":memory:" in self.database_url
+
+        engine_kwargs: dict[str, Any] = {"future": True}
+        if self._is_sqlite:
+            if self._is_memory:
+                engine_kwargs["poolclass"] = StaticPool
+                engine_kwargs["connect_args"] = {"check_same_thread": False}
+            else:
+                # NullPool guarantees connections close cleanly on Windows (zero WinError 32 file locks)
+                engine_kwargs["poolclass"] = NullPool
+                engine_kwargs["connect_args"] = {"timeout": 30}
+
+        self._engine: AsyncEngine = create_async_engine(self.database_url, **engine_kwargs)
+        if self._is_sqlite:
+
+            @event.listens_for(self._engine.sync_engine, "connect")
+            def _configure_sqlite(dbapi_conn: Any, _record: Any) -> None:
+                cur = dbapi_conn.cursor()
+                try:
+                    cur.execute("PRAGMA busy_timeout = 30000")
+                    cur.execute("PRAGMA foreign_keys = ON")
+                    if not self._is_memory:
+                        cur.execute("PRAGMA synchronous = NORMAL")
+                finally:
+                    cur.close()
+
+        self._initialized = False
+        self._fts_enabled = False
+        self._write_lock = asyncio.Lock()
+
+    async def initialize(self) -> None:
+        if self._initialized:
+            return
+        async with self._write_lock:
+            if self._initialized:
+                return
+            async with self._engine.begin() as conn:
+                if self._is_sqlite and not self._is_memory:
+                    # DELETE journal avoids lingering -wal/-shm files on Windows teardown; set once at init
+                    await conn.execute(text("PRAGMA journal_mode = DELETE"))
+                await conn.run_sync(metadata.create_all)
+                if self._is_sqlite:
+                    try:
+                        await conn.execute(
+                            text(
+                                "CREATE VIRTUAL TABLE IF NOT EXISTS fts_documents "
+                                "USING fts5(doc_type UNINDEXED, doc_id UNINDEXED, title, body, tokenize='unicode61')"
+                            )
+                        )
+                        self._fts_enabled = True
+                    except Exception:
+                        self._fts_enabled = False
+                row = (await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))).first()
+                if row is None:
+                    await conn.execute(
+                        t_system_epochs.insert().values(
+                            id=1,
+                            data_epoch=1,
+                            policy_epoch=1,
+                            updated_at=format_utc(utc_now()),
+                            last_reason="initialize",
+                            last_actor="system",
+                        )
+                    )
+            self._initialized = True
+
+    async def close(self) -> None:
+        await self._engine.dispose()
+        self._initialized = False
+
+    async def _ensure_init(self) -> None:
+        if not self._initialized:
+            await self.initialize()
+
+    async def _effective_principal(self, principal: Principal) -> Principal:
+        if principal.revoked:
+            return principal
+        if await self.is_principal_revoked(principal.user_id):
+            return principal.model_copy(update={"revoked": True})
+        return principal
+
+    async def _bump_data_epoch_conn(
+        self, conn: Any, *, reason: str, actor: str
+    ) -> int:
+        row = (await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))).first()
+        new_epoch = (row.data_epoch + 1) if row else 2
+        await conn.execute(
+            t_system_epochs.update()
+            .where(t_system_epochs.c.id == 1)
+            .values(
+                data_epoch=new_epoch,
+                updated_at=format_utc(utc_now()),
+                last_reason=reason,
+                last_actor=actor,
+            )
+        )
+        return new_epoch
+
+    async def _fts_upsert(self, conn: Any, doc_type: str, doc_id: str, title: str, body: str) -> None:
+        if not self._fts_enabled:
+            return
+        await conn.execute(
+            text("DELETE FROM fts_documents WHERE doc_type = :dt AND doc_id = :did"),
+            {"dt": doc_type, "did": doc_id},
+        )
+        await conn.execute(
+            text("INSERT INTO fts_documents(doc_type, doc_id, title, body) VALUES (:dt, :did, :title, :body)"),
+            {"dt": doc_type, "did": doc_id, "title": title, "body": body},
+        )
+
+    async def fts_search(self, query: str, *, limit: int = 100) -> list[tuple[str, str, float]]:
+        """Execute SQLite FTS5 lexical match returning (doc_type, doc_id, score). Caller MUST apply ACL filtering!"""
+        await self._ensure_init()
+        if not self._fts_enabled or not query.strip():
+            return []
+        tokens = [
+            "".join(ch for ch in tok if ch.isalnum() or ch in ("_", "-"))
+            for tok in query.strip().split()
+        ]
+        clean_tokens = [t for t in tokens if t]
+        if not clean_tokens:
+            return []
+        fts_expr = " AND ".join(f'"{t}"*' for t in clean_tokens)
+        async with self._engine.connect() as conn:
+            try:
+                rows = (
+                    await conn.execute(
+                        text(
+                            "SELECT doc_type, doc_id, bm25(fts_documents) AS rank_score "
+                            "FROM fts_documents WHERE fts_documents MATCH :q "
+                            "ORDER BY rank_score ASC LIMIT :lim"
+                        ),
+                        {"q": fts_expr, "lim": limit},
+                    )
+                ).fetchall()
+            except Exception:
+                return []
+        results: list[tuple[str, str, float]] = []
+        for dt, did, rank_score in rows:
+            # bm25 returns negative values (more negative = better match) in SQLite FTS5
+            score = 1.0 / (1.0 + max(0.0, float(rank_score) + 10.0)) if rank_score is not None else 1.0
+            results.append((str(dt), str(did), score))
+        return results
+
+    # ------------------------------------------------------------------
+    # Epochs & Revocation
+    # ------------------------------------------------------------------
+
+    async def get_epochs(self) -> PolicyEpochState:
+        await self._ensure_init()
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))).first()
+            assert row is not None
+            return PolicyEpochState(
+                data_epoch=row.data_epoch,
+                policy_epoch=row.policy_epoch,
+                updated_at=row.updated_at,
+                last_reason=row.last_reason,
+                last_actor=row.last_actor,
+            )
+
+    async def bump_policy_epoch(self, reason: str, actor: str) -> PolicyEpochState:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                row = (await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))).first()
+                assert row is not None
+                new_pe = row.policy_epoch + 1
+                now = utc_now()
+                await conn.execute(
+                    t_system_epochs.update()
+                    .where(t_system_epochs.c.id == 1)
+                    .values(
+                        policy_epoch=new_pe,
+                        updated_at=format_utc(now),
+                        last_reason=reason,
+                        last_actor=actor,
+                    )
+                )
+                return PolicyEpochState(
+                    data_epoch=row.data_epoch,
+                    policy_epoch=new_pe,
+                    updated_at=now,
+                    last_reason=reason,
+                    last_actor=actor,
+                )
+
+    async def is_principal_revoked(self, user_id: str) -> bool:
+        await self._ensure_init()
+        async with self._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(t_revoked_principals.c.user_id).where(t_revoked_principals.c.user_id == user_id)
+                )
+            ).first()
+            return row is not None
+
+    async def revoke_principal(self, user_id: str, *, reason: str, actor: str) -> PolicyEpochState:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_revoked_principals).where(t_revoked_principals.c.user_id == user_id)
+                )
+                await conn.execute(
+                    t_revoked_principals.insert().values(
+                        user_id=user_id,
+                        reason=reason,
+                        actor=actor,
+                        revoked_at=format_utc(utc_now()),
+                    )
+                )
+                row = (await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))).first()
+                assert row is not None
+                new_pe = row.policy_epoch + 1
+                now = utc_now()
+                await conn.execute(
+                    t_system_epochs.update()
+                    .where(t_system_epochs.c.id == 1)
+                    .values(
+                        policy_epoch=new_pe,
+                        updated_at=format_utc(now),
+                        last_reason=f"revoke:{user_id}:{reason}",
+                        last_actor=actor,
+                    )
+                )
+                return PolicyEpochState(
+                    data_epoch=row.data_epoch,
+                    policy_epoch=new_pe,
+                    updated_at=now,
+                    last_reason=f"revoke:{user_id}:{reason}",
+                    last_actor=actor,
+                )
+
+    # ------------------------------------------------------------------
+    # Row Deserializers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _row_to_entity(row: Any) -> Entity:
+        return Entity(
+            entity_id=row.entity_id,
+            entity_type=EntityType(row.entity_type),
+            canonical_key=row.canonical_key,
+            display_name=row.display_name,
+            aliases=json.loads(row.aliases_json),
+            description=row.description,
+            owner_group=row.owner_group,
+            wall_side=WallSide(row.wall_side),
+            read_acl_groups=json.loads(row.read_acl_groups_json),
+            write_acl_groups=json.loads(row.write_acl_groups_json),
+            attributes=json.loads(row.attributes_json),
+            status=row.status,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    @staticmethod
+    def _row_to_identifier(row: Any) -> EntityIdentifier:
+        return EntityIdentifier(
+            id=row.id,
+            entity_id=row.entity_id,
+            scheme=row.scheme,
+            identifier_value=row.identifier_value,
+            authority=row.authority,
+            is_primary=bool(row.is_primary),
+            valid_from=row.valid_from,
+            valid_to=row.valid_to,
+            recorded_at=row.recorded_at,
+            superseded_at=row.superseded_at,
+        )
+
+    @staticmethod
+    def _row_to_lineage(row: Any) -> EntityLineageEvent:
+        return EntityLineageEvent(
+            event_id=row.event_id,
+            source_entity_id=row.source_entity_id,
+            target_entity_id=row.target_entity_id,
+            event_type=row.event_type,
+            effective_date=row.effective_date,
+            recorded_at=row.recorded_at,
+            summary=row.summary,
+            evidence_uri=row.evidence_uri,
+            evidence_acl_groups=json.loads(row.evidence_acl_groups_json),
+            wall_side=WallSide(row.wall_side),
+            read_acl_groups=json.loads(row.read_acl_groups_json),
+        )
+
+    @staticmethod
+    def _row_to_position(row: Any) -> Position:
+        return Position(
+            position_id=row.position_id,
+            vehicle_entity_id=row.vehicle_entity_id,
+            instrument_entity_id=row.instrument_entity_id,
+            issuer_entity_id=row.issuer_entity_id,
+            position_type=row.position_type,
+            quantity=row.quantity,
+            market_value=row.market_value,
+            currency=row.currency,
+            weight_bps=row.weight_bps,
+            as_of_date=date.fromisoformat(row.as_of_date),
+            recorded_at=row.recorded_at,
+            source_system=row.source_system,
+            wall_side=WallSide(row.wall_side),
+            read_acl_groups=json.loads(row.read_acl_groups_json),
+        )
+
+    @staticmethod
+    def _row_to_coverage(row: Any) -> Coverage:
+        return Coverage(
+            coverage_id=row.coverage_id,
+            analyst_entity_id=row.analyst_entity_id,
+            issuer_entity_id=row.issuer_entity_id,
+            coverage_role=row.coverage_role,
+            coverage_status=row.coverage_status,
+            valid_from=row.valid_from,
+            valid_to=row.valid_to,
+            wall_side=WallSide(row.wall_side),
+            read_acl_groups=json.loads(row.read_acl_groups_json),
+        )
+
+    @staticmethod
+    def _row_to_skill_binding(row: Any) -> SkillBinding:
+        return SkillBinding(
+            binding_id=row.binding_id,
+            skill_entity_id=row.skill_entity_id,
+            target_entity_id=row.target_entity_id,
+            mapping_purpose=row.mapping_purpose,
+            read_mode=row.read_mode,
+            required_predicates=json.loads(row.required_predicates_json),
+            active=bool(row.active),
+        )
+
+    @staticmethod
+    def _row_to_claim(row: Any) -> Claim:
+        return Claim(
+            claim_id=row.claim_id,
+            subject_id=row.subject_id,
+            predicate=row.predicate,
+            object_value=row.object_value,
+            object_entity_id=row.object_entity_id,
+            context_purpose=row.context_purpose,
+            scope_type=row.scope_type,
+            scope_id=row.scope_id,
+            channel=row.channel,
+            epistemic_status=row.epistemic_status,
+            kind=row.kind,
+            is_mandatory=bool(row.is_mandatory),
+            facets=ClaimFacets.model_validate(json.loads(row.facets_json)),
+            provenance=Provenance.model_validate(json.loads(row.provenance_json)),
+            acl=ClaimACL.model_validate(json.loads(row.acl_json)),
+            valid_from=row.valid_from,
+            valid_to=row.valid_to,
+            recorded_at=row.recorded_at,
+            superseded_at=row.superseded_at,
+            superseded_by=row.superseded_by,
+            created_by=row.created_by,
+        )
+
+    @staticmethod
+    def _row_to_topic(row: Any) -> Topic:
+        return Topic(
+            topic_id=row.topic_id,
+            slug=row.slug,
+            pref_label=row.pref_label,
+            alt_labels=json.loads(row.alt_labels_json),
+            broader_topic_id=row.broader_topic_id,
+            narrower_topic_ids=json.loads(row.narrower_topic_ids_json),
+            related_topic_ids=json.loads(row.related_topic_ids_json),
+            topic_kind=row.topic_kind,
+            merged_into_topic_id=row.merged_into_topic_id,
+            owner_group=row.owner_group,
+            status=row.status,
+        )
+
+    @staticmethod
+    def _row_to_attachment(row: Any) -> TopicAttachment:
+        return TopicAttachment(
+            attachment_id=row.attachment_id,
+            topic_id=row.topic_id,
+            target_type=row.target_type,
+            target_id=row.target_id,
+            attachment_source=row.attachment_source,
+            confidence=row.confidence,
+            wall_side=WallSide(row.wall_side),
+            read_acl_groups=json.loads(row.read_acl_groups_json),
+        )
+
+    @staticmethod
+    def _row_to_knowledge_item(row: Any) -> KnowledgeItem:
+        return KnowledgeItem(
+            item_id=row.item_id,
+            knowledge_kind=row.knowledge_kind,
+            display_name=row.display_name,
+            slug=row.slug,
+            source_path=row.source_path,
+            body_markdown=row.body_markdown,
+            wall_side=WallSide(row.wall_side),
+            read_acl_groups=json.loads(row.read_acl_groups_json),
+            write_acl_groups=json.loads(row.write_acl_groups_json),
+            topics=json.loads(row.topics_json),
+            related_entities=json.loads(row.related_entities_json),
+            metadata=json.loads(row.metadata_json),
+            content_sha256=row.content_sha256,
+            valid_from=row.valid_from,
+            recorded_at=row.recorded_at,
+            okf_version=row.okf_version,
+        )
+
+    @staticmethod
+    def _row_to_patch(row: Any) -> CuratorDraftPatch:
+        return CuratorDraftPatch(
+            patch_id=row.patch_id,
+            wall_side=WallSide(row.wall_side),
+            read_acl_groups=json.loads(row.read_acl_groups_json),
+            target_type=row.target_type,
+            target_id=row.target_id,
+            title=row.title,
+            rationale=row.rationale,
+            unified_diff=row.unified_diff,
+            proposed_changes=json.loads(row.proposed_changes_json),
+            source_claim_ids=json.loads(row.source_claim_ids_json),
+            stale_evidence_paths=json.loads(row.stale_evidence_paths_json),
+            status=row.status,
+            created_at=row.created_at,
+            created_by=row.created_by,
+            reviewed_by=row.reviewed_by,
+            reviewed_at=row.reviewed_at,
+        )
+
+    @staticmethod
+    def _row_to_memory(row: Any) -> MemoryRecord:
+        return MemoryRecord(
+            memory_id=row.memory_id,
+            user_id=row.user_id,
+            scope_type=row.scope_type,
+            skill_id=row.skill_id,
+            key=row.key,
+            content=row.content,
+            tags=json.loads(row.tags_json),
+            linked_entity_ids=json.loads(row.linked_entity_ids_json),
+            linked_topic_ids=json.loads(row.linked_topic_ids_json),
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    # ------------------------------------------------------------------
+    # Plane 1: Entities, Crosswalks, Lineage & Reified Associations
+    # ------------------------------------------------------------------
+
+    async def _upsert_entity_conn(self, conn: Any, entity: Entity) -> None:
+        await conn.execute(delete(t_entities).where(t_entities.c.entity_id == entity.entity_id))
+        await conn.execute(
+            t_entities.insert().values(
+                entity_id=entity.entity_id,
+                entity_type=entity.entity_type.value,
+                canonical_key=entity.canonical_key,
+                display_name=entity.display_name,
+                aliases_json=json.dumps(entity.aliases),
+                description=entity.description,
+                owner_group=entity.owner_group,
+                wall_side=entity.wall_side.value,
+                read_acl_groups_json=json.dumps(entity.read_acl_groups),
+                write_acl_groups_json=json.dumps(entity.write_acl_groups),
+                attributes_json=json.dumps(entity.attributes),
+                status=entity.status,
+                created_at=format_utc(entity.created_at),
+                updated_at=format_utc(entity.updated_at),
+            )
+        )
+        await self._fts_upsert(
+            conn,
+            "entity",
+            entity.entity_id,
+            f"{entity.display_name} {entity.canonical_key}",
+            f"{' '.join(entity.aliases)} {entity.description} {entity.entity_type.value}",
+        )
+
+    async def upsert_entity(self, entity: Entity) -> Entity:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await self._upsert_entity_conn(conn, entity)
+                await self._bump_data_epoch_conn(conn, reason=f"upsert_entity:{entity.entity_id}", actor="system")
+        return entity
+
+    async def _get_entity_raw(self, conn: Any, entity_id_or_key: str) -> Entity | None:
+        row = (
+            await conn.execute(
+                select(t_entities).where(
+                    (t_entities.c.entity_id == entity_id_or_key)
+                    | (t_entities.c.canonical_key == entity_id_or_key.lower())
+                )
+            )
+        ).first()
+        return self._row_to_entity(row) if row is not None else None
+
+    async def get_entity(self, entity_id_or_key: str, *, principal: Principal) -> Entity | None:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        async with self._engine.connect() as conn:
+            ent = await self._get_entity_raw(conn, entity_id_or_key)
+        if ent is None or not self.policy.can_read_entity(eff, ent):
+            return None
+        return ent
+
+    async def list_entities(
+        self,
+        *,
+        principal: Principal,
+        entity_types: Sequence[str] | None = None,
+        topic_slug: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[Entity]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_entities).order_by(t_entities.c.canonical_key.asc())
+            if entity_types:
+                stmt = stmt.where(t_entities.c.entity_type.in_(list(entity_types)))
+            rows = (await conn.execute(stmt)).fetchall()
+            authorized = [
+                ent
+                for r in rows
+                if self.policy.can_read_entity(eff, (ent := self._row_to_entity(r)))
+            ]
+            if topic_slug:
+                slug_l = topic_slug.strip().lower()
+                topic_rows = (await conn.execute(select(t_topics))).fetchall()
+                all_topics = [self._row_to_topic(r) for r in topic_rows]
+                t_by_slug = {t.slug: t for t in all_topics}
+                matching_tids: set[str] = set()
+                root_t = t_by_slug.get(slug_l)
+                if root_t:
+                    matching_tids.add(root_t.topic_id)
+                    frontier = [root_t.topic_id]
+                    while frontier:
+                        cur = frontier.pop()
+                        for t in all_topics:
+                            if (t.broader_topic_id == cur or t.merged_into_topic_id == cur) and t.topic_id not in matching_tids:
+                                matching_tids.add(t.topic_id)
+                                frontier.append(t.topic_id)
+                att_rows = (await conn.execute(select(t_topic_attachments))).fetchall()
+                claim_rows = (await conn.execute(select(t_claims))).fetchall()
+                claim_subj = {
+                    c.claim_id: c.subject_id
+                    for r in claim_rows
+                    if self.policy.can_read_claim(eff, (c := self._row_to_claim(r)))
+                }
+                matched_eids: set[str] = set()
+                for r in att_rows:
+                    att = self._row_to_attachment(r)
+                    if att.topic_id not in matching_tids:
+                        continue
+                    if not self.policy.can_read_record(
+                        eff, wall_side=att.wall_side, read_acl_groups=att.read_acl_groups
+                    ):
+                        continue
+                    if att.target_type == "claim":
+                        if att.target_id in claim_subj:
+                            matched_eids.add(claim_subj[att.target_id])
+                    else:
+                        matched_eids.add(att.target_id)
+                authorized = [e for e in authorized if e.entity_id in matched_eids]
+        return authorized[offset : offset + limit]
+
+    async def upsert_identifier(self, ident: EntityIdentifier) -> EntityIdentifier:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_entity_identifiers).where(t_entity_identifiers.c.id == ident.id)
+                )
+                await conn.execute(
+                    t_entity_identifiers.insert().values(
+                        id=ident.id,
+                        entity_id=ident.entity_id,
+                        scheme=ident.scheme,
+                        identifier_value=ident.identifier_value,
+                        authority=ident.authority,
+                        is_primary=ident.is_primary,
+                        valid_from=format_utc(ident.valid_from),
+                        valid_to=format_utc(ident.valid_to),
+                        recorded_at=format_utc(ident.recorded_at),
+                        superseded_at=format_utc(ident.superseded_at),
+                    )
+                )
+        return ident
+
+    async def list_identifiers(
+        self,
+        entity_id: str,
+        *,
+        as_of: datetime | None = None,
+        recorded_as_of: datetime | None = None,
+    ) -> list[EntityIdentifier]:
+        await self._ensure_init()
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(t_entity_identifiers).where(t_entity_identifiers.c.entity_id == entity_id)
+                )
+            ).fetchall()
+        idents = [self._row_to_identifier(r) for r in rows]
+        if as_of is not None or recorded_as_of is not None:
+            idents = [
+                i for i in idents if is_identifier_visible(i, as_of=as_of, recorded_as_of=recorded_as_of)
+            ]
+        return idents
+
+    async def add_lineage_event(self, event: EntityLineageEvent) -> EntityLineageEvent:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_entity_lineage_events).where(
+                        t_entity_lineage_events.c.event_id == event.event_id
+                    )
+                )
+                await conn.execute(
+                    t_entity_lineage_events.insert().values(
+                        event_id=event.event_id,
+                        source_entity_id=event.source_entity_id,
+                        target_entity_id=event.target_entity_id,
+                        event_type=event.event_type,
+                        effective_date=format_utc(event.effective_date),
+                        recorded_at=format_utc(event.recorded_at),
+                        summary=event.summary,
+                        evidence_uri=sanitize_uri_secrets(event.evidence_uri),
+                        evidence_acl_groups_json=json.dumps(event.evidence_acl_groups),
+                        wall_side=event.wall_side.value,
+                        read_acl_groups_json=json.dumps(event.read_acl_groups),
+                    )
+                )
+        return event
+
+    async def list_lineage_events(
+        self, entity_id: str, *, principal: Principal
+    ) -> list[EntityLineageEvent]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(t_entity_lineage_events).where(
+                        (t_entity_lineage_events.c.source_entity_id == entity_id)
+                        | (t_entity_lineage_events.c.target_entity_id == entity_id)
+                    )
+                )
+            ).fetchall()
+        out: list[EntityLineageEvent] = []
+        for r in rows:
+            san = self.policy.sanitize_lineage_for_principal(eff, self._row_to_lineage(r))
+            if san is not None:
+                out.append(san)
+        out.sort(key=lambda e: (e.effective_date, e.event_id))
+        return out
+
+    async def upsert_position(self, pos: Position) -> Position:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(delete(t_positions).where(t_positions.c.position_id == pos.position_id))
+                await conn.execute(
+                    t_positions.insert().values(
+                        position_id=pos.position_id,
+                        vehicle_entity_id=pos.vehicle_entity_id,
+                        instrument_entity_id=pos.instrument_entity_id,
+                        issuer_entity_id=pos.issuer_entity_id,
+                        position_type=pos.position_type,
+                        quantity=pos.quantity,
+                        market_value=pos.market_value,
+                        currency=pos.currency,
+                        weight_bps=pos.weight_bps,
+                        as_of_date=pos.as_of_date.isoformat(),
+                        recorded_at=format_utc(pos.recorded_at),
+                        source_system=pos.source_system,
+                        wall_side=pos.wall_side.value,
+                        read_acl_groups_json=json.dumps(pos.read_acl_groups),
+                    )
+                )
+        return pos
+
+    async def list_positions(
+        self,
+        *,
+        principal: Principal,
+        vehicle_id: str | None = None,
+        issuer_id: str | None = None,
+    ) -> list[Position]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_positions)
+            if vehicle_id:
+                stmt = stmt.where(t_positions.c.vehicle_entity_id == vehicle_id)
+            if issuer_id:
+                stmt = stmt.where(t_positions.c.issuer_entity_id == issuer_id)
+            rows = (await conn.execute(stmt)).fetchall()
+        return [
+            pos
+            for r in rows
+            if self.policy.can_read_record(
+                eff, wall_side=(pos := self._row_to_position(r)).wall_side, read_acl_groups=pos.read_acl_groups
+            )
+        ]
+
+    async def upsert_coverage(self, cov: Coverage) -> Coverage:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(delete(t_coverages).where(t_coverages.c.coverage_id == cov.coverage_id))
+                await conn.execute(
+                    t_coverages.insert().values(
+                        coverage_id=cov.coverage_id,
+                        analyst_entity_id=cov.analyst_entity_id,
+                        issuer_entity_id=cov.issuer_entity_id,
+                        coverage_role=cov.coverage_role,
+                        coverage_status=cov.coverage_status,
+                        valid_from=format_utc(cov.valid_from),
+                        valid_to=format_utc(cov.valid_to),
+                        wall_side=cov.wall_side.value,
+                        read_acl_groups_json=json.dumps(cov.read_acl_groups),
+                    )
+                )
+        return cov
+
+    async def list_coverages(
+        self,
+        *,
+        principal: Principal,
+        issuer_id: str | None = None,
+        status: str | None = None,
+    ) -> list[Coverage]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_coverages)
+            if issuer_id:
+                stmt = stmt.where(t_coverages.c.issuer_entity_id == issuer_id)
+            if status:
+                stmt = stmt.where(t_coverages.c.coverage_status == status)
+            rows = (await conn.execute(stmt)).fetchall()
+        return [
+            cov
+            for r in rows
+            if self.policy.can_read_record(
+                eff, wall_side=(cov := self._row_to_coverage(r)).wall_side, read_acl_groups=cov.read_acl_groups
+            )
+        ]
+
+    async def upsert_skill_binding(self, binding: SkillBinding) -> SkillBinding:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_skill_bindings).where(t_skill_bindings.c.binding_id == binding.binding_id)
+                )
+                await conn.execute(
+                    t_skill_bindings.insert().values(
+                        binding_id=binding.binding_id,
+                        skill_entity_id=binding.skill_entity_id,
+                        target_entity_id=binding.target_entity_id,
+                        mapping_purpose=binding.mapping_purpose,
+                        read_mode=binding.read_mode,
+                        required_predicates_json=json.dumps(binding.required_predicates),
+                        active=binding.active,
+                    )
+                )
+        return binding
+
+    async def list_skill_bindings(
+        self,
+        *,
+        skill_entity_id: str | None = None,
+        target_entity_id: str | None = None,
+    ) -> list[SkillBinding]:
+        await self._ensure_init()
+        async with self._engine.connect() as conn:
+            stmt = select(t_skill_bindings)
+            if skill_entity_id:
+                stmt = stmt.where(t_skill_bindings.c.skill_entity_id == skill_entity_id)
+            if target_entity_id:
+                stmt = stmt.where(t_skill_bindings.c.target_entity_id == target_entity_id)
+            rows = (await conn.execute(stmt)).fetchall()
+        return [self._row_to_skill_binding(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Plane 2: Bitemporal Claims & N-Way Conflicts
+    # ------------------------------------------------------------------
+
+    async def _insert_claim_conn(self, conn: Any, claim: Claim) -> None:
+        await conn.execute(delete(t_claims).where(t_claims.c.claim_id == claim.claim_id))
+        await conn.execute(
+            t_claims.insert().values(
+                claim_id=claim.claim_id,
+                subject_id=claim.subject_id,
+                predicate=claim.predicate,
+                object_value=claim.object_value,
+                object_entity_id=claim.object_entity_id,
+                context_purpose=claim.context_purpose,
+                scope_type=claim.scope_type,
+                scope_id=claim.scope_id,
+                channel=claim.channel,
+                epistemic_status=claim.epistemic_status,
+                kind=claim.kind,
+                is_mandatory=claim.is_mandatory,
+                facets_json=json.dumps(claim.facets.model_dump(mode="json")),
+                provenance_json=json.dumps(claim.provenance.model_dump(mode="json")),
+                wall_side=claim.acl.wall_side.value,
+                acl_json=json.dumps(claim.acl.model_dump(mode="json")),
+                valid_from=format_utc(claim.valid_from),
+                valid_to=format_utc(claim.valid_to),
+                recorded_at=format_utc(claim.recorded_at),
+                superseded_at=format_utc(claim.superseded_at),
+                superseded_by=claim.superseded_by,
+                created_by=claim.created_by,
+            )
+        )
+        # Index claim value & predicate ONLY (never restricted excerpt!) into FTS5
+        await self._fts_upsert(
+            conn,
+            "claim",
+            claim.claim_id,
+            f"{claim.predicate} {claim.object_value}",
+            f"{claim.context_purpose} {claim.provenance.source_system} {claim.epistemic_status}",
+        )
+
+    async def _upsert_conflict_conn(self, conn: Any, conflict: ConflictSet) -> None:
+        await conn.execute(
+            delete(t_conflict_set_members).where(
+                t_conflict_set_members.c.conflict_set_id == conflict.conflict_set_id
+            )
+        )
+        await conn.execute(
+            delete(t_conflict_sets).where(t_conflict_sets.c.conflict_set_id == conflict.conflict_set_id)
+        )
+        await conn.execute(
+            t_conflict_sets.insert().values(
+                conflict_set_id=conflict.conflict_set_id,
+                subject_id=conflict.subject_id,
+                predicate=conflict.predicate,
+                context_purpose=conflict.context_purpose,
+                scope_type=conflict.scope_type,
+                scope_id=conflict.scope_id,
+                status=conflict.status,
+                winning_claim_id=conflict.winning_claim_id,
+                resolution_rationale=conflict.resolution_rationale,
+                resolved_by=conflict.resolved_by,
+                resolved_at=format_utc(conflict.resolved_at),
+                created_at=format_utc(conflict.created_at),
+                summary=conflict.summary,
+            )
+        )
+        for cid in dict.fromkeys(conflict.claim_ids):
+            await conn.execute(
+                t_conflict_set_members.insert().values(
+                    conflict_set_id=conflict.conflict_set_id,
+                    claim_id=cid,
+                )
+            )
+
+    async def seed_claim_raw(self, claim: Claim) -> Claim:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await self._insert_claim_conn(conn, claim)
+        return claim
+
+    async def seed_conflict_raw(self, conflict: ConflictSet) -> ConflictSet:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await self._upsert_conflict_conn(conn, conflict)
+        return conflict
+
+    async def write_claim(
+        self, payload: ClaimCreateInput, *, principal: Principal
+    ) -> ClaimWriteResult:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            raise AuthenticationError("Revoked principal cannot write claims")
+
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                lookup_key = payload.subject_id or payload.subject_canonical_key or ""
+                target = await self._get_entity_raw(conn, lookup_key)
+                if target is None:
+                    raise NotFoundError(f"Subject entity not found: {lookup_key}")
+
+                self.policy.authorize_write(
+                    eff,
+                    target_entity=target,
+                    scope_type=payload.scope_type,
+                    epistemic_status=payload.epistemic_status,
+                    force_supersede=payload.force_supersede,
+                    is_mandatory=payload.is_mandatory,
+                )
+
+                epoch_row = (
+                    await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))
+                ).first()
+                assert epoch_row is not None
+                check_toctou_epoch(payload.expected_data_epoch, epoch_row.data_epoch)
+
+                incoming = prepare_incoming_claim(
+                    payload, target_entity=target, principal=eff, repo_root=self.repo_root
+                )
+
+                # Load active claims sharing the collision tuple
+                rows = (
+                    await conn.execute(
+                        select(t_claims).where(
+                            (t_claims.c.subject_id == incoming.subject_id)
+                            & (t_claims.c.predicate == incoming.predicate)
+                            & (t_claims.c.context_purpose == incoming.context_purpose)
+                            & (t_claims.c.scope_type == incoming.scope_type)
+                            & (t_claims.c.scope_id == incoming.scope_id)
+                            & (t_claims.c.superseded_at.is_(None))
+                        )
+                    )
+                ).fetchall()
+                existing_active = [
+                    self._row_to_claim(r)
+                    for r in rows
+                    if r.epistemic_status != "revoked"
+                ]
+                overlapping = [
+                    c
+                    for c in existing_active
+                    if windows_overlap(c.valid_from, c.valid_to, incoming.valid_from, incoming.valid_to)
+                ]
+
+                superseded_claim_id: str | None = None
+                conflict_detected = False
+                conflict_set_id: str | None = None
+                now = utc_now()
+
+                if payload.force_supersede:
+                    for old in overlapping:
+                        if old.channel == incoming.channel:
+                            await conn.execute(
+                                t_claims.update()
+                                .where(t_claims.c.claim_id == old.claim_id)
+                                .values(superseded_at=format_utc(now), superseded_by=incoming.claim_id)
+                            )
+                            if superseded_claim_id is None:
+                                superseded_claim_id = old.claim_id
+                    await self._insert_claim_conn(conn, incoming)
+                else:
+                    colliding = [c for c in overlapping if claims_conflict(c, incoming)]
+                    if colliding:
+                        conflict_detected = True
+                        # Preserve active approved_fact untouched; never auto-overwrite!
+                        if incoming.epistemic_status not in ("unverified_observation", "candidate_sop"):
+                            incoming = incoming.model_copy(update={"epistemic_status": "disputed"})
+                        await self._insert_claim_conn(conn, incoming)
+
+                        # Find existing open ConflictSet for this collision tuple or create one
+                        cs_row = (
+                            await conn.execute(
+                                select(t_conflict_sets).where(
+                                    (t_conflict_sets.c.subject_id == incoming.subject_id)
+                                    & (t_conflict_sets.c.predicate == incoming.predicate)
+                                    & (t_conflict_sets.c.context_purpose == incoming.context_purpose)
+                                    & (t_conflict_sets.c.scope_type == incoming.scope_type)
+                                    & (t_conflict_sets.c.scope_id == incoming.scope_id)
+                                    & (t_conflict_sets.c.status == "open")
+                                )
+                            )
+                        ).first()
+                        if cs_row is not None:
+                            conflict_set_id = cs_row.conflict_set_id
+                            existing_members = [
+                                r.claim_id
+                                for r in (
+                                    await conn.execute(
+                                        select(t_conflict_set_members.c.claim_id).where(
+                                            t_conflict_set_members.c.conflict_set_id == conflict_set_id
+                                        )
+                                    )
+                                ).fetchall()
+                            ]
+                            member_ids = list(
+                                dict.fromkeys(
+                                    existing_members + [c.claim_id for c in colliding] + [incoming.claim_id]
+                                )
+                            )
+                            for cid in member_ids:
+                                if cid not in existing_members:
+                                    await conn.execute(
+                                        t_conflict_set_members.insert().values(
+                                            conflict_set_id=conflict_set_id, claim_id=cid
+                                        )
+                                    )
+                        else:
+                            conflict_set_id = f"conflict-{uuid.uuid4().hex[:12]}"
+                            member_ids = list(
+                                dict.fromkeys([c.claim_id for c in colliding] + [incoming.claim_id])
+                            )
+                            cs = ConflictSet(
+                                conflict_set_id=conflict_set_id,
+                                subject_id=incoming.subject_id,
+                                predicate=incoming.predicate,
+                                context_purpose=incoming.context_purpose,
+                                scope_type=incoming.scope_type,
+                                scope_id=incoming.scope_id,
+                                status="open",
+                                claim_ids=member_ids,
+                                created_at=now,
+                                summary=f"{len(member_ids)}-way conflict on {target.display_name} ({incoming.predicate})",
+                            )
+                            await self._upsert_conflict_conn(conn, cs)
+                    else:
+                        await self._insert_claim_conn(conn, incoming)
+
+                new_epoch = await self._bump_data_epoch_conn(
+                    conn, reason=f"write_claim:{incoming.claim_id}", actor=eff.user_id
+                )
+
+        sanitized = self.policy.sanitize_claim_for_principal(eff, incoming) or incoming
+        return ClaimWriteResult(
+            claim=sanitized,
+            conflict_detected=conflict_detected,
+            conflict_set_id=conflict_set_id,
+            superseded_claim_id=superseded_claim_id,
+            data_epoch=new_epoch,
+            snapshot_scheduled=payload.force_supersede and incoming.epistemic_status == "approved_fact",
+        )
+
+    async def update_claim(
+        self, claim_id: str, patch: ClaimUpdateInput, *, principal: Principal
+    ) -> ClaimWriteResult:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            raise AuthenticationError("Revoked principal cannot update claims")
+
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                row = (await conn.execute(select(t_claims).where(t_claims.c.claim_id == claim_id))).first()
+                if row is None:
+                    raise NotFoundError(f"Claim not found: {claim_id}")
+                existing = self._row_to_claim(row)
+                if not self.policy.can_read_claim(eff, existing):
+                    raise NotFoundError(f"Claim not found: {claim_id}")
+                target = await self._get_entity_raw(conn, existing.subject_id)
+                if target is None:
+                    raise NotFoundError(f"Subject entity not found: {existing.subject_id}")
+
+                new_status = patch.epistemic_status or existing.epistemic_status
+                new_mandatory = patch.is_mandatory if patch.is_mandatory is not None else existing.is_mandatory
+                self.policy.authorize_write(
+                    eff,
+                    target_entity=target,
+                    scope_type=existing.scope_type,
+                    epistemic_status=new_status,
+                    force_supersede=patch.force_supersede,
+                    is_mandatory=new_mandatory,
+                )
+
+                epoch_row = (
+                    await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))
+                ).first()
+                assert epoch_row is not None
+                check_toctou_epoch(patch.expected_data_epoch, epoch_row.data_epoch)
+
+                if existing.superseded_at is not None:
+                    raise OptimisticConcurrencyError(f"Claim {claim_id} was already superseded")
+
+                now = utc_now()
+                new_claim_id = f"clm-{uuid.uuid4().hex[:12]}"
+                updated_claim = existing.model_copy(
+                    deep=True,
+                    update={
+                        "claim_id": new_claim_id,
+                        "object_value": patch.object_value if patch.object_value is not None else existing.object_value,
+                        "epistemic_status": new_status,
+                        "valid_from": ensure_utc(patch.valid_from) if patch.valid_from is not None else existing.valid_from,
+                        "valid_to": ensure_utc(patch.valid_to) if patch.valid_to is not None else existing.valid_to,
+                        "is_mandatory": new_mandatory,
+                        "facets": patch.facets if patch.facets is not None else existing.facets,
+                        "recorded_at": now,
+                        "superseded_at": None,
+                        "superseded_by": None,
+                        "created_by": eff.user_id,
+                    },
+                )
+                await conn.execute(
+                    t_claims.update()
+                    .where(t_claims.c.claim_id == existing.claim_id)
+                    .values(superseded_at=format_utc(now), superseded_by=new_claim_id)
+                )
+                await self._insert_claim_conn(conn, updated_claim)
+                new_epoch = await self._bump_data_epoch_conn(
+                    conn, reason=f"update_claim:{existing.claim_id}->{new_claim_id}", actor=eff.user_id
+                )
+
+        sanitized = self.policy.sanitize_claim_for_principal(eff, updated_claim) or updated_claim
+        return ClaimWriteResult(
+            claim=sanitized,
+            conflict_detected=False,
+            superseded_claim_id=existing.claim_id,
+            data_epoch=new_epoch,
+            snapshot_scheduled=updated_claim.epistemic_status == "approved_fact",
+        )
+
+    async def get_claim(self, claim_id: str, *, principal: Principal) -> Claim | None:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return None
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(select(t_claims).where(t_claims.c.claim_id == claim_id))).first()
+        if row is None:
+            return None
+        return self.policy.sanitize_claim_for_principal(eff, self._row_to_claim(row))
+
+    async def query_claims(
+        self,
+        *,
+        principal: Principal,
+        subject_ids: Sequence[str] | None = None,
+        object_entity_ids: Sequence[str] | None = None,
+        predicates: Sequence[str] | None = None,
+        context_purpose: str | None = None,
+        scope_types: Sequence[str] | None = None,
+        scope_id: str | None = None,
+        epistemic_statuses: Sequence[str] | None = None,
+        as_of: datetime | None = None,
+        recorded_as_of: datetime | None = None,
+        include_superseded: bool = False,
+    ) -> list[Claim]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_claims)
+            if subject_ids is not None:
+                if not subject_ids:
+                    return []
+                stmt = stmt.where(t_claims.c.subject_id.in_(list(subject_ids)))
+            if object_entity_ids is not None:
+                if not object_entity_ids:
+                    return []
+                stmt = stmt.where(t_claims.c.object_entity_id.in_(list(object_entity_ids)))
+            if predicates is not None:
+                stmt = stmt.where(t_claims.c.predicate.in_(list(predicates)))
+            if context_purpose is not None:
+                stmt = stmt.where(t_claims.c.context_purpose == context_purpose)
+            if scope_types is not None:
+                stmt = stmt.where(t_claims.c.scope_type.in_(list(scope_types)))
+            if scope_id is not None:
+                stmt = stmt.where(t_claims.c.scope_id == scope_id)
+            if epistemic_statuses is not None:
+                stmt = stmt.where(t_claims.c.epistemic_status.in_(list(epistemic_statuses)))
+            rows = (await conn.execute(stmt)).fetchall()
+
+        results: list[Claim] = []
+        for r in rows:
+            raw = self._row_to_claim(r)
+            if not is_claim_visible(
+                raw, as_of=as_of, recorded_as_of=recorded_as_of, include_superseded=include_superseded
+            ):
+                continue
+            sanitized = self.policy.sanitize_claim_for_principal(eff, raw)
+            if sanitized is not None:
+                results.append(sanitized)
+        results.sort(key=lambda c: (-c.recorded_at.timestamp(), c.claim_id))
+        return results
+
+    async def list_conflicts(
+        self,
+        *,
+        principal: Principal,
+        status: str = "open",
+        subject_id: str | None = None,
+    ) -> list[ConflictSet]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_conflict_sets)
+            if status != "all":
+                stmt = stmt.where(t_conflict_sets.c.status == status)
+            if subject_id is not None:
+                stmt = stmt.where(t_conflict_sets.c.subject_id == subject_id)
+            cs_rows = (await conn.execute(stmt)).fetchall()
+            if not cs_rows:
+                return []
+            member_rows = (await conn.execute(select(t_conflict_set_members))).fetchall()
+            members_map: dict[str, list[str]] = {}
+            for mr in member_rows:
+                members_map.setdefault(mr.conflict_set_id, []).append(mr.claim_id)
+
+            all_cids = {cid for cids in members_map.values() for cid in cids}
+            claim_rows = (
+                await conn.execute(select(t_claims).where(t_claims.c.claim_id.in_(list(all_cids))))
+            ).fetchall() if all_cids else []
+            claim_map = {r.claim_id: self._row_to_claim(r) for r in claim_rows}
+
+            out: list[ConflictSet] = []
+            for r in cs_rows:
+                target = await self._get_entity_raw(conn, r.subject_id)
+                if target is None or not self.policy.can_read_entity(eff, target):
+                    continue
+                visible_claims: list[Claim] = []
+                for cid in members_map.get(r.conflict_set_id, []):
+                    clm = claim_map.get(cid)
+                    if clm is None:
+                        continue
+                    san = self.policy.sanitize_claim_for_principal(eff, clm)
+                    if san is not None:
+                        visible_claims.append(san)
+                if not visible_claims:
+                    continue
+                out.append(
+                    ConflictSet(
+                        conflict_set_id=r.conflict_set_id,
+                        subject_id=r.subject_id,
+                        predicate=r.predicate,
+                        context_purpose=r.context_purpose,
+                        scope_type=r.scope_type,
+                        scope_id=r.scope_id,
+                        status=r.status,
+                        claim_ids=[c.claim_id for c in visible_claims],
+                        claims=visible_claims,
+                        winning_claim_id=r.winning_claim_id,
+                        resolution_rationale=r.resolution_rationale,
+                        resolved_by=r.resolved_by,
+                        resolved_at=r.resolved_at,
+                        created_at=r.created_at,
+                        summary=r.summary,
+                    )
+                )
+        out.sort(key=lambda cs: (-cs.created_at.timestamp(), cs.conflict_set_id))
+        return out
+
+    async def resolve_conflict(
+        self, resolution: ConflictResolutionInput, *, principal: Principal
+    ) -> ConflictSet:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            raise AuthenticationError("Revoked principal cannot resolve conflicts")
+
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                cs_row = (
+                    await conn.execute(
+                        select(t_conflict_sets).where(
+                            t_conflict_sets.c.conflict_set_id == resolution.conflict_set_id
+                        )
+                    )
+                ).first()
+                if cs_row is None:
+                    raise NotFoundError(f"ConflictSet not found: {resolution.conflict_set_id}")
+                target = await self._get_entity_raw(conn, cs_row.subject_id)
+                if target is None or not self.policy.can_read_entity(eff, target):
+                    raise NotFoundError(f"ConflictSet not found: {resolution.conflict_set_id}")
+
+                self.policy.authorize_write(
+                    eff,
+                    target_entity=target,
+                    scope_type=cs_row.scope_type,
+                    epistemic_status="approved_fact",
+                    force_supersede=True,
+                    resolving_conflict=True,
+                )
+
+                epoch_row = (
+                    await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))
+                ).first()
+                assert epoch_row is not None
+                check_toctou_epoch(resolution.expected_data_epoch, epoch_row.data_epoch)
+
+                if cs_row.status == "resolved":
+                    raise OptimisticConcurrencyError(
+                        f"ConflictSet {resolution.conflict_set_id} is already resolved"
+                    )
+
+                member_ids = [
+                    r.claim_id
+                    for r in (
+                        await conn.execute(
+                            select(t_conflict_set_members.c.claim_id).where(
+                                t_conflict_set_members.c.conflict_set_id == resolution.conflict_set_id
+                            )
+                        )
+                    ).fetchall()
+                ]
+                claim_rows = (
+                    await conn.execute(select(t_claims).where(t_claims.c.claim_id.in_(member_ids)))
+                ).fetchall()
+                member_claims = {r.claim_id: self._row_to_claim(r) for r in claim_rows}
+
+                if not resolution.winning_claim_id and not resolution.replacement_object_value:
+                    raise ValidationError(
+                        "Provide either winning_claim_id or replacement_object_value to resolve conflict"
+                    )
+
+                now = utc_now()
+                winning_base: Claim | None = None
+                if resolution.winning_claim_id:
+                    if resolution.winning_claim_id not in member_claims:
+                        raise ValidationError(
+                            f"winning_claim_id {resolution.winning_claim_id} is not a member of {resolution.conflict_set_id}"
+                        )
+                    winning_base = member_claims[resolution.winning_claim_id]
+                else:
+                    winning_base = next(iter(member_claims.values()))
+
+                # Determine whether to keep existing approved_fact in-place or mint new bitemporal approved_fact
+                needs_new_version = (
+                    resolution.replacement_object_value is not None
+                    or winning_base.epistemic_status != "approved_fact"
+                    or resolution.valid_from is not None
+                )
+
+                if needs_new_version:
+                    approved_id = f"clm-{uuid.uuid4().hex[:12]}"
+                    approved_claim = winning_base.model_copy(
+                        deep=True,
+                        update={
+                            "claim_id": approved_id,
+                            "object_value": (
+                                resolution.replacement_object_value
+                                if resolution.replacement_object_value is not None
+                                else winning_base.object_value
+                            ),
+                            "epistemic_status": "approved_fact",
+                            "valid_from": (
+                                ensure_utc(resolution.valid_from)
+                                if resolution.valid_from is not None
+                                else winning_base.valid_from
+                            ),
+                            "recorded_at": now,
+                            "superseded_at": None,
+                            "superseded_by": None,
+                            "created_by": eff.user_id,
+                        },
+                    )
+                    # Supersede all competing active claims (preserving full bitemporal system-time history!)
+                    for cid, clm in member_claims.items():
+                        if clm.superseded_at is None:
+                            update_vals: dict[str, Any] = {
+                                "superseded_at": format_utc(now),
+                                "superseded_by": approved_id,
+                            }
+                            if resolution.close_prior_valid_to is not None and clm.epistemic_status == "approved_fact":
+                                update_vals["valid_to"] = format_utc(resolution.close_prior_valid_to)
+                            await conn.execute(
+                                t_claims.update().where(t_claims.c.claim_id == cid).values(**update_vals)
+                            )
+                    await self._insert_claim_conn(conn, approved_claim)
+                    member_ids.append(approved_id)
+                    await conn.execute(
+                        t_conflict_set_members.insert().values(
+                            conflict_set_id=resolution.conflict_set_id, claim_id=approved_id
+                        )
+                    )
+                    member_claims[approved_id] = approved_claim
+                    final_winner_id = approved_id
+                else:
+                    final_winner_id = winning_base.claim_id
+                    for cid, clm in member_claims.items():
+                        if cid != final_winner_id and clm.superseded_at is None:
+                            await conn.execute(
+                                t_claims.update()
+                                .where(t_claims.c.claim_id == cid)
+                                .values(superseded_at=format_utc(now), superseded_by=final_winner_id)
+                            )
+
+                await conn.execute(
+                    t_conflict_sets.update()
+                    .where(t_conflict_sets.c.conflict_set_id == resolution.conflict_set_id)
+                    .values(
+                        status="resolved",
+                        winning_claim_id=final_winner_id,
+                        resolution_rationale=resolution.rationale,
+                        resolved_by=eff.user_id,
+                        resolved_at=format_utc(now),
+                    )
+                )
+                await self._bump_data_epoch_conn(
+                    conn, reason=f"resolve_conflict:{resolution.conflict_set_id}", actor=eff.user_id
+                )
+
+                # Reload updated member claims
+                refreshed_rows = (
+                    await conn.execute(select(t_claims).where(t_claims.c.claim_id.in_(member_ids)))
+                ).fetchall()
+                sanitized_claims = [
+                    san
+                    for r in refreshed_rows
+                    if (san := self.policy.sanitize_claim_for_principal(eff, self._row_to_claim(r))) is not None
+                ]
+
+                return ConflictSet(
+                    conflict_set_id=cs_row.conflict_set_id,
+                    subject_id=cs_row.subject_id,
+                    predicate=cs_row.predicate,
+                    context_purpose=cs_row.context_purpose,
+                    scope_type=cs_row.scope_type,
+                    scope_id=cs_row.scope_id,
+                    status="resolved",
+                    claim_ids=[c.claim_id for c in sanitized_claims],
+                    claims=sanitized_claims,
+                    winning_claim_id=final_winner_id,
+                    resolution_rationale=resolution.rationale,
+                    resolved_by=eff.user_id,
+                    resolved_at=now,
+                    created_at=cs_row.created_at,
+                    summary=cs_row.summary,
+                )
+
+    # ------------------------------------------------------------------
+    # Plane 4: Dynamic Topics, Knowledge Factory, Curator Patches, Personal Memory
+    # ------------------------------------------------------------------
+
+    async def _upsert_topic_conn(self, conn: Any, topic: Topic) -> None:
+        await conn.execute(delete(t_topics).where(t_topics.c.topic_id == topic.topic_id))
+        await conn.execute(
+            t_topics.insert().values(
+                topic_id=topic.topic_id,
+                slug=topic.slug,
+                pref_label=topic.pref_label,
+                alt_labels_json=json.dumps(topic.alt_labels),
+                broader_topic_id=topic.broader_topic_id,
+                narrower_topic_ids_json=json.dumps(topic.narrower_topic_ids),
+                related_topic_ids_json=json.dumps(topic.related_topic_ids),
+                topic_kind=topic.topic_kind,
+                merged_into_topic_id=topic.merged_into_topic_id,
+                owner_group=topic.owner_group,
+                status=topic.status,
+            )
+        )
+        await self._fts_upsert(
+            conn,
+            "topic",
+            topic.topic_id,
+            f"{topic.pref_label} {topic.slug}",
+            " ".join(topic.alt_labels),
+        )
+
+    async def upsert_topic(self, topic: Topic) -> Topic:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await self._upsert_topic_conn(conn, topic)
+                # Keep broader topic's narrower_topic_ids in sync
+                if topic.broader_topic_id:
+                    parent_row = (
+                        await conn.execute(
+                            select(t_topics).where(t_topics.c.topic_id == topic.broader_topic_id)
+                        )
+                    ).first()
+                    if parent_row is not None:
+                        parent = self._row_to_topic(parent_row)
+                        if topic.topic_id not in parent.narrower_topic_ids:
+                            parent.narrower_topic_ids.append(topic.topic_id)
+                            await self._upsert_topic_conn(conn, parent)
+                await self._bump_data_epoch_conn(conn, reason=f"upsert_topic:{topic.topic_id}", actor="system")
+        return topic
+
+    async def update_topic(
+        self, topic_id: str, patch: TopicPatchInput, *, principal: Principal
+    ) -> Topic:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            raise AuthenticationError("Revoked principal cannot update topics")
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                rows = (await conn.execute(select(t_topics))).fetchall()
+                topics_map = {r.topic_id: self._row_to_topic(r) for r in rows}
+                updated, modified_list = apply_topic_patch(
+                    topics_map,
+                    topic_id,
+                    pref_label=patch.pref_label,
+                    alt_labels=patch.alt_labels,
+                    broader_topic_id=patch.broader_topic_id,
+                    related_topic_ids=patch.related_topic_ids,
+                    merged_into_topic_id=patch.merged_into_topic_id,
+                    status=patch.status,
+                    topic_kind=patch.topic_kind,
+                )
+                for t in modified_list:
+                    await self._upsert_topic_conn(conn, t)
+                await self._bump_data_epoch_conn(conn, reason=f"update_topic:{topic_id}", actor=eff.user_id)
+        return updated
+
+    async def list_topics(
+        self, *, principal: Principal, include_archived: bool = False
+    ) -> list[Topic]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_topics).order_by(t_topics.c.slug.asc())
+            if not include_archived:
+                stmt = stmt.where(t_topics.c.status != "archived")
+            rows = (await conn.execute(stmt)).fetchall()
+        return [self._row_to_topic(r) for r in rows]
+
+    async def attach_topic(self, attachment: TopicAttachment) -> TopicAttachment:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_topic_attachments).where(
+                        t_topic_attachments.c.attachment_id == attachment.attachment_id
+                    )
+                )
+                await conn.execute(
+                    t_topic_attachments.insert().values(
+                        attachment_id=attachment.attachment_id,
+                        topic_id=attachment.topic_id,
+                        target_type=attachment.target_type,
+                        target_id=attachment.target_id,
+                        attachment_source=attachment.attachment_source,
+                        confidence=attachment.confidence,
+                        wall_side=attachment.wall_side.value,
+                        read_acl_groups_json=json.dumps(attachment.read_acl_groups),
+                    )
+                )
+        return attachment
+
+    async def list_topic_attachments(
+        self,
+        *,
+        principal: Principal,
+        topic_id: str | None = None,
+        target_id: str | None = None,
+    ) -> list[TopicAttachment]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_topic_attachments)
+            if topic_id:
+                stmt = stmt.where(t_topic_attachments.c.topic_id == topic_id)
+            if target_id:
+                stmt = stmt.where(t_topic_attachments.c.target_id == target_id)
+            rows = (await conn.execute(stmt)).fetchall()
+        return [
+            att
+            for r in rows
+            if self.policy.can_read_record(
+                eff, wall_side=(att := self._row_to_attachment(r)).wall_side, read_acl_groups=att.read_acl_groups
+            )
+        ]
+
+    async def upsert_knowledge_item(self, item: KnowledgeItem) -> KnowledgeItem:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_knowledge_items).where(t_knowledge_items.c.item_id == item.item_id)
+                )
+                await conn.execute(
+                    t_knowledge_items.insert().values(
+                        item_id=item.item_id,
+                        knowledge_kind=item.knowledge_kind,
+                        display_name=item.display_name,
+                        slug=item.slug,
+                        source_path=item.source_path,
+                        body_markdown=item.body_markdown,
+                        wall_side=item.wall_side.value,
+                        read_acl_groups_json=json.dumps(item.read_acl_groups),
+                        write_acl_groups_json=json.dumps(item.write_acl_groups),
+                        topics_json=json.dumps(item.topics),
+                        related_entities_json=json.dumps(item.related_entities),
+                        metadata_json=json.dumps(item.metadata),
+                        content_sha256=item.content_sha256,
+                        valid_from=format_utc(item.valid_from),
+                        recorded_at=format_utc(item.recorded_at),
+                        okf_version=item.okf_version,
+                    )
+                )
+                await self._fts_upsert(
+                    conn,
+                    "knowledge_item",
+                    item.item_id,
+                    f"{item.display_name} {item.slug}",
+                    f"{item.body_markdown} {' '.join(item.topics)} {' '.join(item.related_entities)}",
+                )
+        return item
+
+    async def list_knowledge_items(
+        self, *, principal: Principal, kind: str | None = None
+    ) -> list[KnowledgeItem]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_knowledge_items).order_by(t_knowledge_items.c.item_id.asc())
+            if kind:
+                stmt = stmt.where(t_knowledge_items.c.knowledge_kind == kind)
+            rows = (await conn.execute(stmt)).fetchall()
+        return [
+            ki
+            for r in rows
+            if self.policy.can_read_record(
+                eff, wall_side=(ki := self._row_to_knowledge_item(r)).wall_side, read_acl_groups=ki.read_acl_groups
+            )
+        ]
+
+    async def list_curator_patches(
+        self, *, principal: Principal, status: str = "pending_steward_review"
+    ) -> list[CuratorDraftPatch]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_curator_patches)
+            if status != "all":
+                stmt = stmt.where(t_curator_patches.c.status == status)
+            rows = (await conn.execute(stmt)).fetchall()
+        return [
+            p
+            for r in rows
+            if self.policy.can_read_record(
+                eff, wall_side=(p := self._row_to_patch(r)).wall_side, read_acl_groups=p.read_acl_groups
+            )
+        ]
+
+    async def save_curator_patch(self, patch: CuratorDraftPatch) -> CuratorDraftPatch:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_curator_patches).where(t_curator_patches.c.patch_id == patch.patch_id)
+                )
+                await conn.execute(
+                    t_curator_patches.insert().values(
+                        patch_id=patch.patch_id,
+                        wall_side=patch.wall_side.value,
+                        read_acl_groups_json=json.dumps(patch.read_acl_groups),
+                        target_type=patch.target_type,
+                        target_id=patch.target_id,
+                        title=patch.title,
+                        rationale=patch.rationale,
+                        unified_diff=patch.unified_diff,
+                        proposed_changes_json=json.dumps(patch.proposed_changes),
+                        source_claim_ids_json=json.dumps(patch.source_claim_ids),
+                        stale_evidence_paths_json=json.dumps(patch.stale_evidence_paths),
+                        status=patch.status,
+                        created_at=format_utc(patch.created_at),
+                        created_by=patch.created_by,
+                        reviewed_by=patch.reviewed_by,
+                        reviewed_at=format_utc(patch.reviewed_at),
+                    )
+                )
+        return patch
+
+    # ------------------------------------------------------------------
+    # Personal Memory & Watchlist
+    # ------------------------------------------------------------------
+
+    async def seed_memory_raw(self, memory: MemoryRecord) -> MemoryRecord:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_personal_memories).where(t_personal_memories.c.memory_id == memory.memory_id)
+                )
+                await conn.execute(
+                    t_personal_memories.insert().values(
+                        memory_id=memory.memory_id,
+                        user_id=memory.user_id,
+                        scope_type=memory.scope_type,
+                        skill_id=memory.skill_id,
+                        key=memory.key,
+                        content=memory.content,
+                        tags_json=json.dumps(memory.tags),
+                        linked_entity_ids_json=json.dumps(memory.linked_entity_ids),
+                        linked_topic_ids_json=json.dumps(memory.linked_topic_ids),
+                        created_at=format_utc(memory.created_at),
+                        updated_at=format_utc(memory.updated_at),
+                    )
+                )
+        return memory
+
+    async def seed_watchlist_raw(self, wl: WatchlistRecord) -> WatchlistRecord:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_personal_watchlists).where(t_personal_watchlists.c.user_id == wl.user_id)
+                )
+                await conn.execute(
+                    t_personal_watchlists.insert().values(
+                        user_id=wl.user_id,
+                        entity_ids_json=json.dumps(wl.entity_ids),
+                        topic_ids_json=json.dumps(wl.topic_ids),
+                        source_ids_json=json.dumps(wl.source_ids),
+                        updated_at=format_utc(wl.updated_at),
+                    )
+                )
+        return wl
+
+    async def upsert_memory(
+        self, record: MemoryUpsertInput, *, principal: Principal
+    ) -> MemoryRecord:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        self.policy.authorize_memory_access(eff)
+
+        now = utc_now()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                existing_row = None
+                if record.memory_id:
+                    existing_row = (
+                        await conn.execute(
+                            select(t_personal_memories).where(
+                                t_personal_memories.c.memory_id == record.memory_id
+                            )
+                        )
+                    ).first()
+                    if existing_row is not None and existing_row.user_id != eff.user_id:
+                        raise NotFoundError(f"Memory not found: {record.memory_id}")
+                else:
+                    existing_row = (
+                        await conn.execute(
+                            select(t_personal_memories).where(
+                                (t_personal_memories.c.user_id == eff.user_id)
+                                & (t_personal_memories.c.scope_type == record.scope_type)
+                                & (t_personal_memories.c.key == record.key)
+                            )
+                        )
+                    ).first()
+
+                mem_id = (
+                    existing_row.memory_id
+                    if existing_row is not None
+                    else (record.memory_id or f"mem-{uuid.uuid4().hex[:12]}")
+                )
+                created_at = ensure_utc(existing_row.created_at) if existing_row is not None else now
+                mem = MemoryRecord(
+                    memory_id=mem_id,
+                    user_id=eff.user_id,
+                    scope_type=record.scope_type,
+                    skill_id=record.skill_id,
+                    key=record.key,
+                    content=record.content,
+                    tags=list(record.tags),
+                    linked_entity_ids=list(record.linked_entity_ids),
+                    linked_topic_ids=list(record.linked_topic_ids),
+                    created_at=created_at or now,
+                    updated_at=now,
+                )
+                await conn.execute(
+                    delete(t_personal_memories).where(t_personal_memories.c.memory_id == mem.memory_id)
+                )
+                await conn.execute(
+                    t_personal_memories.insert().values(
+                        memory_id=mem.memory_id,
+                        user_id=mem.user_id,
+                        scope_type=mem.scope_type,
+                        skill_id=mem.skill_id,
+                        key=mem.key,
+                        content=mem.content,
+                        tags_json=json.dumps(mem.tags),
+                        linked_entity_ids_json=json.dumps(mem.linked_entity_ids),
+                        linked_topic_ids_json=json.dumps(mem.linked_topic_ids),
+                        created_at=format_utc(mem.created_at),
+                        updated_at=format_utc(mem.updated_at),
+                    )
+                )
+                await self._bump_data_epoch_conn(conn, reason=f"upsert_memory:{mem.memory_id}", actor=eff.user_id)
+        return mem
+
+    async def get_memory(self, memory_id: str, *, principal: Principal) -> MemoryRecord | None:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            raise AuthenticationError("Revoked principal cannot access personal memory")
+        if not self.policy.is_memory_allowed(eff):
+            return None
+        async with self._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(t_personal_memories).where(
+                        (t_personal_memories.c.memory_id == memory_id)
+                        & (t_personal_memories.c.user_id == eff.user_id)
+                    )
+                )
+            ).first()
+        return self._row_to_memory(row) if row is not None else None
+
+    async def list_memories(
+        self, *, principal: Principal, skill_id: str | None = None
+    ) -> list[MemoryRecord]:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            raise AuthenticationError("Revoked principal cannot access personal memory")
+        if not self.policy.is_memory_allowed(eff):
+            return []
+        async with self._engine.connect() as conn:
+            stmt = select(t_personal_memories).where(t_personal_memories.c.user_id == eff.user_id)
+            if skill_id is not None:
+                stmt = stmt.where(
+                    (t_personal_memories.c.skill_id == skill_id)
+                    | (t_personal_memories.c.scope_type == "user")
+                )
+            rows = (await conn.execute(stmt)).fetchall()
+        out = [self._row_to_memory(r) for r in rows]
+        out.sort(key=lambda m: (-m.updated_at.timestamp(), m.memory_id))
+        return out
+
+    async def delete_memory(self, memory_id: str, *, principal: Principal) -> bool:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        self.policy.authorize_memory_access(eff)
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                res = await conn.execute(
+                    delete(t_personal_memories).where(
+                        (t_personal_memories.c.memory_id == memory_id)
+                        & (t_personal_memories.c.user_id == eff.user_id)
+                    )
+                )
+                deleted = (res.rowcount or 0) > 0
+                if deleted:
+                    await self._bump_data_epoch_conn(
+                        conn, reason=f"delete_memory:{memory_id}", actor=eff.user_id
+                    )
+                return deleted
+
+    async def get_watchlist(self, *, principal: Principal) -> WatchlistRecord:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            raise AuthenticationError("Revoked principal cannot access watchlist")
+        if not self.policy.is_memory_allowed(eff):
+            return WatchlistRecord(user_id=eff.user_id)
+        async with self._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(t_personal_watchlists).where(t_personal_watchlists.c.user_id == eff.user_id)
+                )
+            ).first()
+        if row is None:
+            wl = WatchlistRecord(user_id=eff.user_id)
+        else:
+            wl = WatchlistRecord(
+                user_id=row.user_id,
+                entity_ids=json.loads(row.entity_ids_json),
+                topic_ids=json.loads(row.topic_ids_json),
+                source_ids=json.loads(row.source_ids_json),
+                updated_at=row.updated_at,
+            )
+        # Recompute strictly post-ACL alerts
+        auth_entities = {e.entity_id: e for e in await self.list_entities(principal=eff, limit=2000)}
+        auth_claims = await self.query_claims(principal=eff, include_superseded=False)
+        auth_conflicts = await self.list_conflicts(principal=eff, status="open")
+        auth_attachments = await self.list_topic_attachments(principal=eff)
+        wl.alerts = compute_watchlist_alerts(
+            wl,
+            principal=eff,
+            policy=self.policy,
+            entities=auth_entities,
+            claims=auth_claims,
+            conflicts=auth_conflicts,
+            attachments=auth_attachments,
+        )
+        return wl
+
+    async def put_watchlist(
+        self, watchlist: WatchlistUpdateInput, *, principal: Principal
+    ) -> WatchlistRecord:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        self.policy.authorize_memory_access(eff)
+        now = utc_now()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(t_personal_watchlists).where(t_personal_watchlists.c.user_id == eff.user_id)
+                )
+                await conn.execute(
+                    t_personal_watchlists.insert().values(
+                        user_id=eff.user_id,
+                        entity_ids_json=json.dumps(list(dict.fromkeys(watchlist.entity_ids))),
+                        topic_ids_json=json.dumps(list(dict.fromkeys(watchlist.topic_ids))),
+                        source_ids_json=json.dumps(list(dict.fromkeys(watchlist.source_ids))),
+                        updated_at=format_utc(now),
+                    )
+                )
+                await self._bump_data_epoch_conn(conn, reason=f"put_watchlist:{eff.user_id}", actor=eff.user_id)
+        return await self.get_watchlist(principal=eff)
+
+    # ------------------------------------------------------------------
+    # Receipts, Staleness & State Export/Import (for runtime adapter swap)
+    # ------------------------------------------------------------------
+
+    async def record_receipt(self, receipt: ContextAssemblyReceipt) -> None:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(delete(t_receipts).where(t_receipts.c.receipt_id == receipt.receipt_id))
+                await conn.execute(
+                    t_receipts.insert().values(
+                        receipt_id=receipt.receipt_id,
+                        principal_id=receipt.principal_id,
+                        payload_json=receipt.model_dump_json(),
+                        created_at=format_utc(receipt.timestamp),
+                    )
+                )
+
+    async def get_receipt(
+        self, receipt_id: str, *, principal: Principal
+    ) -> ContextAssemblyReceipt | None:
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return None
+        async with self._engine.connect() as conn:
+            row = (
+                await conn.execute(select(t_receipts).where(t_receipts.c.receipt_id == receipt_id))
+            ).first()
+        if row is None:
+            return None
+        # Only owner or compliance/steward above_the_wall may inspect another user's receipt
+        if row.principal_id != eff.user_id and eff.wall_side != WallSide.above_the_wall:
+            return None
+        return ContextAssemblyReceipt.model_validate_json(row.payload_json)
+
+    async def diff_staleness(self, *, wall_side: str | None = None) -> StalenessReport:
+        await self._ensure_init()
+        async with self._engine.connect() as conn:
+            claim_rows = (await conn.execute(select(t_claims))).fetchall()
+            ki_rows = (await conn.execute(select(t_knowledge_items))).fetchall()
+        claims = [self._row_to_claim(r) for r in claim_rows]
+        items = [self._row_to_knowledge_item(r) for r in ki_rows]
+        return compute_sha_staleness(
+            claims=claims, knowledge_items=items, base_dir=self.repo_root, wall_side=wall_side
+        )
+
+    async def export_state(self) -> dict[str, Any]:
+        """Export complete unfiltered store state for snapshot compilation and runtime adapter swap."""
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.connect() as conn:
+                epoch_row = (
+                    await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))
+                ).first()
+                assert epoch_row is not None
+                epochs = PolicyEpochState(
+                    data_epoch=epoch_row.data_epoch,
+                    policy_epoch=epoch_row.policy_epoch,
+                    updated_at=epoch_row.updated_at,
+                    last_reason=epoch_row.last_reason,
+                    last_actor=epoch_row.last_actor,
+                )
+                entities = [self._row_to_entity(r) for r in (await conn.execute(select(t_entities))).fetchall()]
+                identifiers = [
+                    self._row_to_identifier(r) for r in (await conn.execute(select(t_entity_identifiers))).fetchall()
+                ]
+                lineage_events = [
+                    self._row_to_lineage(r) for r in (await conn.execute(select(t_entity_lineage_events))).fetchall()
+                ]
+                positions = [self._row_to_position(r) for r in (await conn.execute(select(t_positions))).fetchall()]
+                coverages = [self._row_to_coverage(r) for r in (await conn.execute(select(t_coverages))).fetchall()]
+                skill_bindings = [
+                    self._row_to_skill_binding(r) for r in (await conn.execute(select(t_skill_bindings))).fetchall()
+                ]
+                claims = [self._row_to_claim(r) for r in (await conn.execute(select(t_claims))).fetchall()]
+                cs_rows = (await conn.execute(select(t_conflict_sets))).fetchall()
+                m_rows = (await conn.execute(select(t_conflict_set_members))).fetchall()
+                m_map: dict[str, list[str]] = {}
+                for mr in m_rows:
+                    m_map.setdefault(mr.conflict_set_id, []).append(mr.claim_id)
+                conflict_sets = [
+                    ConflictSet(
+                        conflict_set_id=r.conflict_set_id,
+                        subject_id=r.subject_id,
+                        predicate=r.predicate,
+                        context_purpose=r.context_purpose,
+                        scope_type=r.scope_type,
+                        scope_id=r.scope_id,
+                        status=r.status,
+                        claim_ids=m_map.get(r.conflict_set_id, []),
+                        winning_claim_id=r.winning_claim_id,
+                        resolution_rationale=r.resolution_rationale,
+                        resolved_by=r.resolved_by,
+                        resolved_at=r.resolved_at,
+                        created_at=r.created_at,
+                        summary=r.summary,
+                    )
+                    for r in cs_rows
+                ]
+                topics = [self._row_to_topic(r) for r in (await conn.execute(select(t_topics))).fetchall()]
+                attachments = [
+                    self._row_to_attachment(r) for r in (await conn.execute(select(t_topic_attachments))).fetchall()
+                ]
+                knowledge_items = [
+                    self._row_to_knowledge_item(r) for r in (await conn.execute(select(t_knowledge_items))).fetchall()
+                ]
+                curator_patches = [
+                    self._row_to_patch(r) for r in (await conn.execute(select(t_curator_patches))).fetchall()
+                ]
+                memories = [
+                    self._row_to_memory(r) for r in (await conn.execute(select(t_personal_memories))).fetchall()
+                ]
+                watchlists = [
+                    WatchlistRecord(
+                        user_id=r.user_id,
+                        entity_ids=json.loads(r.entity_ids_json),
+                        topic_ids=json.loads(r.topic_ids_json),
+                        source_ids=json.loads(r.source_ids_json),
+                        updated_at=r.updated_at,
+                    )
+                    for r in (await conn.execute(select(t_personal_watchlists))).fetchall()
+                ]
+                revoked_principals = [
+                    (r.user_id, r.reason)
+                    for r in (await conn.execute(select(t_revoked_principals))).fetchall()
+                ]
+                receipts = [
+                    ContextAssemblyReceipt.model_validate_json(r.payload_json)
+                    for r in (await conn.execute(select(t_receipts))).fetchall()
+                ]
+        return {
+            "epochs": epochs,
+            "entities": entities,
+            "identifiers": identifiers,
+            "lineage_events": lineage_events,
+            "positions": positions,
+            "coverages": coverages,
+            "skill_bindings": skill_bindings,
+            "claims": claims,
+            "conflict_sets": conflict_sets,
+            "topics": topics,
+            "topic_attachments": attachments,
+            "knowledge_items": knowledge_items,
+            "curator_patches": curator_patches,
+            "memories": memories,
+            "watchlists": watchlists,
+            "revoked_principals": revoked_principals,
+            "receipts": receipts,
+        }
+
+    async def import_state(self, state: dict[str, Any], *, reset_epochs: bool = False) -> None:
+        """Import a complete domain state dictionary atomically (used by seeder & runtime adapter swap)."""
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                for tbl in (
+                    t_conflict_set_members,
+                    t_conflict_sets,
+                    t_claims,
+                    t_topic_attachments,
+                    t_topics,
+                    t_knowledge_items,
+                    t_curator_patches,
+                    t_personal_memories,
+                    t_personal_watchlists,
+                    t_skill_bindings,
+                    t_coverages,
+                    t_positions,
+                    t_entity_lineage_events,
+                    t_entity_identifiers,
+                    t_entities,
+                    t_revoked_principals,
+                    t_receipts,
+                ):
+                    await conn.execute(delete(tbl))
+                if self._fts_enabled:
+                    await conn.execute(text("DELETE FROM fts_documents"))
+
+                for e in state.get("entities", []):
+                    await self._upsert_entity_conn(conn, e)
+                for ident in state.get("identifiers", []):
+                    await conn.execute(
+                        t_entity_identifiers.insert().values(
+                            id=ident.id,
+                            entity_id=ident.entity_id,
+                            scheme=ident.scheme,
+                            identifier_value=ident.identifier_value,
+                            authority=ident.authority,
+                            is_primary=ident.is_primary,
+                            valid_from=format_utc(ident.valid_from),
+                            valid_to=format_utc(ident.valid_to),
+                            recorded_at=format_utc(ident.recorded_at),
+                            superseded_at=format_utc(ident.superseded_at),
+                        )
+                    )
+                for ev in state.get("lineage_events", []):
+                    await conn.execute(
+                        t_entity_lineage_events.insert().values(
+                            event_id=ev.event_id,
+                            source_entity_id=ev.source_entity_id,
+                            target_entity_id=ev.target_entity_id,
+                            event_type=ev.event_type,
+                            effective_date=format_utc(ev.effective_date),
+                            recorded_at=format_utc(ev.recorded_at),
+                            summary=ev.summary,
+                            evidence_uri=sanitize_uri_secrets(ev.evidence_uri),
+                            evidence_acl_groups_json=json.dumps(ev.evidence_acl_groups),
+                            wall_side=ev.wall_side.value,
+                            read_acl_groups_json=json.dumps(ev.read_acl_groups),
+                        )
+                    )
+                for pos in state.get("positions", []):
+                    await conn.execute(
+                        t_positions.insert().values(
+                            position_id=pos.position_id,
+                            vehicle_entity_id=pos.vehicle_entity_id,
+                            instrument_entity_id=pos.instrument_entity_id,
+                            issuer_entity_id=pos.issuer_entity_id,
+                            position_type=pos.position_type,
+                            quantity=pos.quantity,
+                            market_value=pos.market_value,
+                            currency=pos.currency,
+                            weight_bps=pos.weight_bps,
+                            as_of_date=pos.as_of_date.isoformat(),
+                            recorded_at=format_utc(pos.recorded_at),
+                            source_system=pos.source_system,
+                            wall_side=pos.wall_side.value,
+                            read_acl_groups_json=json.dumps(pos.read_acl_groups),
+                        )
+                    )
+                for cov in state.get("coverages", []):
+                    await conn.execute(
+                        t_coverages.insert().values(
+                            coverage_id=cov.coverage_id,
+                            analyst_entity_id=cov.analyst_entity_id,
+                            issuer_entity_id=cov.issuer_entity_id,
+                            coverage_role=cov.coverage_role,
+                            coverage_status=cov.coverage_status,
+                            valid_from=format_utc(cov.valid_from),
+                            valid_to=format_utc(cov.valid_to),
+                            wall_side=cov.wall_side.value,
+                            read_acl_groups_json=json.dumps(cov.read_acl_groups),
+                        )
+                    )
+                for sb in state.get("skill_bindings", []):
+                    await conn.execute(
+                        t_skill_bindings.insert().values(
+                            binding_id=sb.binding_id,
+                            skill_entity_id=sb.skill_entity_id,
+                            target_entity_id=sb.target_entity_id,
+                            mapping_purpose=sb.mapping_purpose,
+                            read_mode=sb.read_mode,
+                            required_predicates_json=json.dumps(sb.required_predicates),
+                            active=sb.active,
+                        )
+                    )
+                for c in state.get("claims", []):
+                    await self._insert_claim_conn(conn, c)
+                for cs in state.get("conflict_sets", []):
+                    await self._upsert_conflict_conn(conn, cs)
+                for t in state.get("topics", []):
+                    await self._upsert_topic_conn(conn, t)
+                for att in state.get("topic_attachments", []):
+                    await conn.execute(
+                        t_topic_attachments.insert().values(
+                            attachment_id=att.attachment_id,
+                            topic_id=att.topic_id,
+                            target_type=att.target_type,
+                            target_id=att.target_id,
+                            attachment_source=att.attachment_source,
+                            confidence=att.confidence,
+                            wall_side=att.wall_side.value,
+                            read_acl_groups_json=json.dumps(att.read_acl_groups),
+                        )
+                    )
+                for ki in state.get("knowledge_items", []):
+                    await conn.execute(
+                        t_knowledge_items.insert().values(
+                            item_id=ki.item_id,
+                            knowledge_kind=ki.knowledge_kind,
+                            display_name=ki.display_name,
+                            slug=ki.slug,
+                            source_path=ki.source_path,
+                            body_markdown=ki.body_markdown,
+                            wall_side=ki.wall_side.value,
+                            read_acl_groups_json=json.dumps(ki.read_acl_groups),
+                            write_acl_groups_json=json.dumps(ki.write_acl_groups),
+                            topics_json=json.dumps(ki.topics),
+                            related_entities_json=json.dumps(ki.related_entities),
+                            metadata_json=json.dumps(ki.metadata),
+                            content_sha256=ki.content_sha256,
+                            valid_from=format_utc(ki.valid_from),
+                            recorded_at=format_utc(ki.recorded_at),
+                            okf_version=ki.okf_version,
+                        )
+                    )
+                    await self._fts_upsert(
+                        conn,
+                        "knowledge_item",
+                        ki.item_id,
+                        f"{ki.display_name} {ki.slug}",
+                        f"{ki.body_markdown} {' '.join(ki.topics)} {' '.join(ki.related_entities)}",
+                    )
+                for p in state.get("curator_patches", []):
+                    await conn.execute(
+                        t_curator_patches.insert().values(
+                            patch_id=p.patch_id,
+                            wall_side=p.wall_side.value,
+                            read_acl_groups_json=json.dumps(p.read_acl_groups),
+                            target_type=p.target_type,
+                            target_id=p.target_id,
+                            title=p.title,
+                            rationale=p.rationale,
+                            unified_diff=p.unified_diff,
+                            proposed_changes_json=json.dumps(p.proposed_changes),
+                            source_claim_ids_json=json.dumps(p.source_claim_ids),
+                            stale_evidence_paths_json=json.dumps(p.stale_evidence_paths),
+                            status=p.status,
+                            created_at=format_utc(p.created_at),
+                            created_by=p.created_by,
+                            reviewed_by=p.reviewed_by,
+                            reviewed_at=format_utc(p.reviewed_at),
+                        )
+                    )
+                for m in state.get("memories", []):
+                    await conn.execute(
+                        t_personal_memories.insert().values(
+                            memory_id=m.memory_id,
+                            user_id=m.user_id,
+                            scope_type=m.scope_type,
+                            skill_id=m.skill_id,
+                            key=m.key,
+                            content=m.content,
+                            tags_json=json.dumps(m.tags),
+                            linked_entity_ids_json=json.dumps(m.linked_entity_ids),
+                            linked_topic_ids_json=json.dumps(m.linked_topic_ids),
+                            created_at=format_utc(m.created_at),
+                            updated_at=format_utc(m.updated_at),
+                        )
+                    )
+                for wl in state.get("watchlists", []):
+                    await conn.execute(
+                        t_personal_watchlists.insert().values(
+                            user_id=wl.user_id,
+                            entity_ids_json=json.dumps(wl.entity_ids),
+                            topic_ids_json=json.dumps(wl.topic_ids),
+                            source_ids_json=json.dumps(wl.source_ids),
+                            updated_at=format_utc(wl.updated_at),
+                        )
+                    )
+                for uid, reason in state.get("revoked_principals", []):
+                    await conn.execute(
+                        t_revoked_principals.insert().values(
+                            user_id=uid,
+                            reason=reason,
+                            actor="system:import",
+                            revoked_at=format_utc(utc_now()),
+                        )
+                    )
+                for rcpt in state.get("receipts", []):
+                    await conn.execute(
+                        t_receipts.insert().values(
+                            receipt_id=rcpt.receipt_id,
+                            principal_id=rcpt.principal_id,
+                            payload_json=rcpt.model_dump_json(),
+                            created_at=format_utc(rcpt.timestamp),
+                        )
+                    )
+                epochs: PolicyEpochState | None = state.get("epochs")
+                if epochs is not None and not reset_epochs:
+                    await conn.execute(
+                        t_system_epochs.update()
+                        .where(t_system_epochs.c.id == 1)
+                        .values(
+                            data_epoch=epochs.data_epoch,
+                            policy_epoch=epochs.policy_epoch,
+                            updated_at=format_utc(epochs.updated_at),
+                            last_reason=epochs.last_reason,
+                            last_actor=epochs.last_actor,
+                        )
+                    )
+                elif reset_epochs:
+                    await conn.execute(
+                        t_system_epochs.update()
+                        .where(t_system_epochs.c.id == 1)
+                        .values(
+                            data_epoch=1,
+                            policy_epoch=1,
+                            updated_at=format_utc(utc_now()),
+                            last_reason="seed",
+                            last_actor="system:seed",
+                        )
+                    )
