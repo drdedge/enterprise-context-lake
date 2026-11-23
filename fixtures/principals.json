@@ -1,0 +1,200 @@
+{
+  "schema_version": "1.0",
+  "firm": "Meridian Credit & Multi-Strategy Partners",
+  "principals": [
+    {
+      "user_id": "user:product-lead",
+      "display_name": "Rachel Kim",
+      "email": "rachel.kim@meridian.local",
+      "role_summary": "Product & Strategy Lead",
+      "roles": ["product_lead", "reader"],
+      "wall_side": "public_side",
+      "groups": ["firm-all", "product-team", "reporting-readers"],
+      "revoked": false,
+      "groups_overage": false
+    },
+    {
+      "user_id": "user:pm-credit",
+      "display_name": "Marcus Vance",
+      "email": "marcus.vance@meridian.local",
+      "role_summary": "Portfolio Manager — Credit",
+      "roles": ["portfolio_manager", "reader"],
+      "wall_side": "public_side",
+      "groups": ["firm-all", "investment-team", "pm-credit", "reporting-readers"],
+      "revoked": false,
+      "groups_overage": false
+    },
+    {
+      "user_id": "user:public-analyst",
+      "display_name": "Elena Rostova",
+      "email": "elena.rostova@meridian.local",
+      "role_summary": "Public Credit Research Analyst",
+      "roles": ["public_analyst", "reader"],
+      "wall_side": "public_side",
+      "groups": ["firm-all", "public-research"],
+      "revoked": false,
+      "groups_overage": false
+    },
+    {
+      "user_id": "user:private-deal-team",
+      "display_name": "Devon Brooks",
+      "email": "devon.brooks@meridian.local",
+      "role_summary": "Private Credit Deal Team VP",
+      "roles": ["deal_team", "private_analyst"],
+      "wall_side": "private_side",
+      "groups": ["firm-all", "private-credit-deal-team", "mnpi-project-cobalt", "custodian-legal-docs"],
+      "revoked": false,
+      "groups_overage": false
+    },
+    {
+      "user_id": "user:rp-ir",
+      "display_name": "Claire Bennett",
+      "email": "claire.bennett@meridian.local",
+      "role_summary": "Relationship Partner / Investor Relations",
+      "roles": ["investor_relations", "crm_editor"],
+      "wall_side": "public_side",
+      "groups": ["firm-all", "ir-rp-team", "crm-writers"],
+      "revoked": false,
+      "groups_overage": false
+    },
+    {
+      "user_id": "user:fund-steward",
+      "display_name": "David Chen",
+      "email": "david.chen@meridian.local",
+      "role_summary": "Fund Operations Steward",
+      "roles": ["fund_steward", "compliance_reviewer"],
+      "wall_side": "above_the_wall",
+      "groups": ["firm-all", "fund-stewards", "custodian-legal-docs", "reporting-readers", "compliance-oversight"],
+      "revoked": false,
+      "groups_overage": false
+    },
+    {
+      "user_id": "user:revoked-analyst",
+      "display_name": "Jordan Blake",
+      "email": "jordan.blake@meridian.local",
+      "role_summary": "Departed Analyst (Revoked)",
+      "roles": ["public_analyst"],
+      "wall_side": "public_side",
+      "groups": ["firm-all", "public-research"],
+      "revoked": true,
+      "revoked_at": "2026-03-10T09:00:00Z",
+      "revocation_reason": "Employment terminated — Entra account disabled",
+      "groups_overage": false
+    },
+    {
+      "user_id": "user:overage-director",
+      "display_name": "Priya Patel",
+      "email": "priya.patel@meridian.local",
+      "role_summary": "Managing Director (Entra >200-Group Overage)",
+      "roles": ["managing_director", "fund_steward", "compliance_reviewer"],
+      "wall_side": "above_the_wall",
+      "groups": [],
+      "revoked": false,
+      "groups_overage": true,
+      "jwt_claim_names": { "groups": "src1" },
+      "jwt_claim_sources": {
+        "src1": { "endpoint": "https://graph.microsoft.com/v1.0/users/oid-priya-patel/getMemberObjects" }
+      },
+      "directory_core_groups": [
+        "firm-all",
+        "fund-stewards",
+        "private-credit-deal-team",
+        "mnpi-project-cobalt",
+        "custodian-legal-docs",
+        "reporting-readers",
+        "compliance-oversight",
+        "ir-rp-team"
+      ],
+      "directory_extra_group_count": 204,
+      "directory_extra_group_prefix": "entra-sec-committee-"
+    }
+  ],
+  "canaries": [
+    {
+      "token": "CANARY_MNPI_COBALT_LME_9174",
+      "category": "mnpi_private_side",
+      "planted_in": "clm-mnpi-cobalt-lme-terms",
+      "wall_side": "private_side",
+      "required_groups": ["mnpi-project-cobalt", "compliance-oversight"],
+      "authorized_users": ["user:private-deal-team", "user:fund-steward", "user:overage-director"],
+      "forbidden_users": ["user:product-lead", "user:pm-credit", "user:public-analyst", "user:rp-ir", "user:revoked-analyst"]
+    },
+    {
+      "token": "CANARY_MNPI_SOLIS_PIPELINE_5382",
+      "category": "mnpi_private_side",
+      "planted_in": "clm-mnpi-solis-tlb-pricing",
+      "wall_side": "private_side",
+      "required_groups": ["private-credit-deal-team"],
+      "authorized_users": ["user:private-deal-team", "user:overage-director"],
+      "forbidden_users": ["user:product-lead", "user:pm-credit", "user:public-analyst", "user:rp-ir", "user:fund-steward", "user:revoked-analyst"]
+    },
+    {
+      "token": "CANARY_SIDELETTER_MFN_FEE_4091",
+      "category": "restricted_evidence",
+      "planted_in": "clm-admin-code-custodian",
+      "evidence_file": "fixtures/uploads/alpha_credit_lp_side_letter.pdf",
+      "wall_side": "public_side",
+      "claim_read_groups": ["firm-all"],
+      "evidence_acl_groups": ["custodian-legal-docs"],
+      "authorized_evidence_users": ["user:private-deal-team", "user:fund-steward", "user:overage-director"],
+      "redacted_stub_users": ["user:product-lead", "user:pm-credit", "user:public-analyst", "user:rp-ir"],
+      "forbidden_users": ["user:revoked-analyst"]
+    },
+    {
+      "token": "CANARY_PERSONAL_PM_THESIS_8826",
+      "category": "personal_memory",
+      "planted_in": "mem-pm-credit-001",
+      "owner_user_id": "user:pm-credit",
+      "authorized_users": ["user:pm-credit"],
+      "forbidden_users": ["user:product-lead", "user:public-analyst", "user:private-deal-team", "user:rp-ir", "user:fund-steward", "user:revoked-analyst", "user:overage-director"],
+      "forbidden_on_surfaces": ["shared_channel"]
+    },
+    {
+      "token": "CANARY_PERSONAL_DEAL_NOTES_6419",
+      "category": "personal_memory",
+      "planted_in": "mem-deal-team-001",
+      "owner_user_id": "user:private-deal-team",
+      "authorized_users": ["user:private-deal-team"],
+      "forbidden_users": ["user:product-lead", "user:pm-credit", "user:public-analyst", "user:rp-ir", "user:fund-steward", "user:revoked-analyst", "user:overage-director"],
+      "forbidden_on_surfaces": ["shared_channel"]
+    }
+  ],
+  "expected_visibility": {
+    "user:public-analyst": {
+      "http_status": 200,
+      "can_see_entities": ["veh:alpha-credit-offshore-lp", "issuer:apex-industrial", "issuer:global-atlantic-bank", "issuer:cinder-logistics", "issuer:northline-telecom", "issuer:redwood-retail"],
+      "cannot_see_entities": ["proj:project-cobalt-lme", "issuer:solis-medtech"],
+      "redacted_evidence_claims": ["clm-admin-code-custodian"],
+      "can_resolve_conflicts": false,
+      "can_force_supersede": false
+    },
+    "user:private-deal-team": {
+      "http_status": 200,
+      "can_see_entities": ["veh:alpha-credit-offshore-lp", "proj:project-cobalt-lme", "issuer:solis-medtech", "issuer:apex-industrial"],
+      "can_see_evidence_claims": ["clm-admin-code-custodian"],
+      "can_resolve_conflicts": false,
+      "can_force_supersede": false
+    },
+    "user:fund-steward": {
+      "http_status": 200,
+      "can_see_entities": ["veh:alpha-credit-offshore-lp", "proj:project-cobalt-lme", "issuer:apex-industrial"],
+      "can_see_evidence_claims": ["clm-admin-code-custodian"],
+      "can_resolve_conflicts": true,
+      "can_force_supersede": true
+    },
+    "user:overage-director": {
+      "http_status": 200,
+      "groups_overage_resolved": true,
+      "resolved_group_count_min": 201,
+      "can_see_entities": ["veh:alpha-credit-offshore-lp", "proj:project-cobalt-lme", "issuer:solis-medtech"],
+      "can_resolve_conflicts": true,
+      "can_force_supersede": true
+    },
+    "user:revoked-analyst": {
+      "http_status": 401,
+      "can_see_entities": [],
+      "can_resolve_conflicts": false,
+      "can_force_supersede": false
+    }
+  }
+}

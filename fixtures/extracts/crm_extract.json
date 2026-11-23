@@ -1,0 +1,459 @@
+{
+  "source_system": "crm-extract",
+  "extract_timestamp": "2026-03-15T06:15:00Z",
+  "description": "Institutional CRM extract: Legal Parties with multi-role separation (Issuer + LP + Counterparty), Clients, Consultants, LP Commitments, and Prospective Opportunities.",
+  "entities": [
+    {
+      "entity_id": "ent:party-global-atlantic",
+      "entity_type": "legal_party",
+      "canonical_key": "party:global-atlantic-bank",
+      "display_name": "Global Atlantic Financial Group PLC",
+      "aliases": ["Global Atlantic", "GAFG PLC", "Global Atlantic Bank"],
+      "description": "Canonical GLEIF legal party simultaneously acting as Corporate Bond Issuer, Alpha Credit LP Investor ($125M commitment), and ISDA Derivative Counterparty.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards", "crm-writers"],
+      "attributes": { "lei": "5493008G7K2M9X1Q4L88", "jurisdiction": "GB", "roles": ["issuer", "lp_client", "isda_counterparty"] },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:client-nordic-swf",
+      "entity_type": "client",
+      "canonical_key": "client:nordic-sovereign-board",
+      "display_name": "Nordic Sovereign Investment Board",
+      "aliases": ["NSIB", "Nordic SWF"],
+      "description": "Anchor sovereign wealth LP invested across Alpha Credit Offshore LP (Class F Founder) with MFN fee side letter.",
+      "owner_group": "ir-rp-team",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards", "crm-writers"],
+      "attributes": { "client_tier": "sovereign_anchor", "domicile": "NO", "aum_usd_bn": 410 },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:client-helvetia-pension",
+      "entity_type": "client",
+      "canonical_key": "client:helvetia-pension-foundation",
+      "display_name": "Helvetia Pension Foundation",
+      "aliases": ["Helvetia Pension", "HPF Zurich"],
+      "description": "Swiss institutional pension prospect evaluating a $150M allocation to Northstar Direct Lending II.",
+      "owner_group": "ir-rp-team",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards", "crm-writers"],
+      "attributes": { "client_tier": "pension_prospect", "domicile": "CH", "aum_usd_bn": 68 },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:cons-beacon-advisors",
+      "entity_type": "consultant",
+      "canonical_key": "cons:beacon-institutional-advisors",
+      "display_name": "Beacon Institutional Advisors LLC",
+      "aliases": ["Beacon Consulting", "Beacon Advisors"],
+      "description": "Global institutional investment consultant advising Helvetia Pension Foundation on European and US direct lending searches.",
+      "owner_group": "ir-rp-team",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards", "crm-writers"],
+      "attributes": { "coverage_region": "EMEA_NA", "consultant_rating": "Buy-Rated" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:commit-nordic-alpha-250m",
+      "entity_type": "commitment",
+      "canonical_key": "commit:nordic-alpha-offshore-250m",
+      "display_name": "Nordic SWF — $250M Alpha Credit Offshore LP Commitment",
+      "aliases": ["NSIB Alpha Commitment"],
+      "description": "Existing $250M institutional LP commitment in Class F Founder shares of Alpha Credit Offshore LP.",
+      "owner_group": "ir-rp-team",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards", "crm-writers"],
+      "attributes": { "committed_usd": 250000000, "share_class": "sc:alpha-offshore-class-f-founder", "has_side_letter": true, "close_date": "2024-07-01" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:commit-gafg-alpha-125m",
+      "entity_type": "commitment",
+      "canonical_key": "commit:global-atlantic-alpha-offshore-125m",
+      "display_name": "Global Atlantic — $125M Alpha Credit Offshore LP Commitment",
+      "aliases": ["GAFG Alpha LP Commitment"],
+      "description": "Existing $125M institutional LP commitment by dual-role legal party Global Atlantic Financial Group PLC in Class A Institutional shares.",
+      "owner_group": "ir-rp-team",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards", "crm-writers"],
+      "attributes": { "committed_usd": 125000000, "share_class": "sc:alpha-offshore-class-a-usd", "has_side_letter": false, "close_date": "2024-09-15" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:opp-helvetia-nsdl2-150m",
+      "entity_type": "opportunity",
+      "canonical_key": "opp:helvetia-northstar-dl2-150m",
+      "display_name": "Helvetia Pension — $150M Northstar DL II Prospect Opportunity",
+      "aliases": ["Helvetia NSDL2 Mandate"],
+      "description": "Active Stage-3 Operational Due Diligence (ODD) prospect mandate advised by Beacon Institutional Advisors targeting Q2 2026 final close.",
+      "owner_group": "ir-rp-team",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards", "crm-writers"],
+      "attributes": { "target_usd": 150000000, "stage": "ODD_Finalist", "expected_close_quarter": "2026-Q2", "probability_pct": 65 },
+      "status": "active"
+    }
+  ],
+  "entity_identifiers": [
+    {
+      "id": "ident-party-gafg-lei",
+      "entity_id": "ent:party-global-atlantic",
+      "scheme": "lei",
+      "identifier_value": "5493008G7K2M9X1Q4L88",
+      "authority": "GLEIF",
+      "is_primary": true,
+      "valid_from": "2020-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-01-10T00:00:00Z",
+      "superseded_at": null
+    },
+    {
+      "id": "ident-party-gafg-crm",
+      "entity_id": "ent:party-global-atlantic",
+      "scheme": "crm_id",
+      "identifier_value": "SF-ACC-88410",
+      "authority": "Salesforce Institutional CRM",
+      "is_primary": false,
+      "valid_from": "2024-01-10T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-01-10T00:00:00Z",
+      "superseded_at": null
+    },
+    {
+      "id": "ident-client-nordic-crm",
+      "entity_id": "ent:client-nordic-swf",
+      "scheme": "crm_id",
+      "identifier_value": "SF-ACC-10004",
+      "authority": "Salesforce Institutional CRM",
+      "is_primary": true,
+      "valid_from": "2023-06-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2023-06-01T00:00:00Z",
+      "superseded_at": null
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "clm-dual-role-gafg-lp",
+      "subject_id": "ent:party-global-atlantic",
+      "predicate": "acts_as_lp_client",
+      "object_value": "commit:global-atlantic-alpha-offshore-125m",
+      "object_entity_id": "ent:commit-gafg-alpha-125m",
+      "context_purpose": "lp_relationship",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "financial",
+        "modality": "quantitative",
+        "numeric_value": 125000000.0,
+        "unit": "usd",
+        "currency": "USD",
+        "accounting_basis": "commitment_par",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "point_in_time",
+        "fiscal_period": "2024-Q3",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "crm-extract",
+        "evidence_uri": "fixtures/extracts/crm_extract.json",
+        "span_locator": "entities[5]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards", "crm-writers"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-09-15T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-09-16T08:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:crm-sync"
+    },
+    {
+      "claim_id": "clm-dual-role-gafg-counterparty",
+      "subject_id": "ent:party-global-atlantic",
+      "predicate": "acts_as_counterparty",
+      "object_value": "veh:alpha-credit-master-lp",
+      "object_entity_id": "ent:veh-alpha-master",
+      "context_purpose": "isda_swap_counterparty",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "crm-extract",
+        "evidence_uri": "fixtures/extracts/crm_extract.json",
+        "span_locator": "entities[0]",
+        "excerpt": "ISDA 2002 Master Agreement & CSA executed between Alpha Credit Master Fund LP and Global Atlantic Financial Group PLC (LEI 5493008G7K2M9X1Q4L88)."
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-03-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-03-02T10:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:legal-sync"
+    },
+    {
+      "claim_id": "clm-commit-gafg-vehicle",
+      "subject_id": "ent:commit-gafg-alpha-125m",
+      "predicate": "committed_to_vehicle",
+      "object_value": "veh:alpha-credit-offshore-lp",
+      "object_entity_id": "ent:veh-alpha-offshore",
+      "context_purpose": "lp_relationship",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "financial",
+        "modality": "quantitative",
+        "numeric_value": 125000000.0,
+        "unit": "usd",
+        "currency": "USD",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "crm-extract",
+        "evidence_uri": "fixtures/extracts/crm_extract.json",
+        "span_locator": "entities[5]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards", "crm-writers"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-09-15T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-09-16T08:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:crm-sync"
+    },
+    {
+      "claim_id": "clm-commit-nordic-client",
+      "subject_id": "ent:client-nordic-swf",
+      "predicate": "holds_commitment",
+      "object_value": "commit:nordic-alpha-offshore-250m",
+      "object_entity_id": "ent:commit-nordic-alpha-250m",
+      "context_purpose": "lp_relationship",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "financial",
+        "modality": "quantitative",
+        "numeric_value": 250000000.0,
+        "unit": "usd",
+        "currency": "USD",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "crm-extract",
+        "evidence_uri": "fixtures/extracts/crm_extract.json",
+        "span_locator": "entities[4]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards", "crm-writers"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-02T09:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:crm-sync"
+    },
+    {
+      "claim_id": "clm-commit-nordic-vehicle",
+      "subject_id": "ent:commit-nordic-alpha-250m",
+      "predicate": "committed_to_vehicle",
+      "object_value": "veh:alpha-credit-offshore-lp",
+      "object_entity_id": "ent:veh-alpha-offshore",
+      "context_purpose": "lp_relationship",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "financial",
+        "modality": "quantitative",
+        "numeric_value": 250000000.0,
+        "unit": "usd",
+        "currency": "USD",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "crm-extract",
+        "evidence_uri": "fixtures/extracts/crm_extract.json",
+        "span_locator": "entities[4]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards", "crm-writers"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-02T09:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:crm-sync"
+    },
+    {
+      "claim_id": "clm-opp-helvetia-pursues",
+      "subject_id": "ent:client-helvetia-pension",
+      "predicate": "pursues_opportunity",
+      "object_value": "opp:helvetia-northstar-dl2-150m",
+      "object_entity_id": "ent:opp-helvetia-nsdl2-150m",
+      "context_purpose": "fundraising_pipeline",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "financial",
+        "modality": "quantitative",
+        "numeric_value": 150000000.0,
+        "unit": "usd",
+        "currency": "USD",
+        "epistemic_temporal": "estimate",
+        "periodicity": "quarterly",
+        "fiscal_period": "2026-Q2",
+        "ingestion_channel": "human_authored"
+      },
+      "provenance": {
+        "source_system": "crm-extract",
+        "evidence_uri": "fixtures/extracts/crm_extract.json",
+        "span_locator": "entities[6]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards", "crm-writers"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2026-01-15T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2026-01-18T11:00:00Z",
+      "superseded_at": null,
+      "created_by": "user:rp-ir"
+    },
+    {
+      "claim_id": "clm-opp-helvetia-target",
+      "subject_id": "ent:opp-helvetia-nsdl2-150m",
+      "predicate": "targets_vehicle",
+      "object_value": "veh:northstar-dl-ii-lp",
+      "object_entity_id": "ent:veh-northstar-dl-ii",
+      "context_purpose": "fundraising_pipeline",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "estimate",
+        "periodicity": "quarterly",
+        "fiscal_period": "2026-Q2",
+        "ingestion_channel": "human_authored"
+      },
+      "provenance": {
+        "source_system": "crm-extract",
+        "evidence_uri": "fixtures/extracts/crm_extract.json",
+        "span_locator": "entities[6]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards", "crm-writers"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2026-01-15T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2026-01-18T11:00:00Z",
+      "superseded_at": null,
+      "created_by": "user:rp-ir"
+    },
+    {
+      "claim_id": "clm-cons-beacon-advises",
+      "subject_id": "ent:cons-beacon-advisors",
+      "predicate": "advises_client",
+      "object_value": "client:helvetia-pension-foundation",
+      "object_entity_id": "ent:client-helvetia-pension",
+      "context_purpose": "consultant_coverage",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "unaudited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "human_authored"
+      },
+      "provenance": {
+        "source_system": "crm-extract",
+        "evidence_uri": "fixtures/extracts/crm_extract.json",
+        "span_locator": "entities[3]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards", "crm-writers"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2025-11-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2025-11-05T14:00:00Z",
+      "superseded_at": null,
+      "created_by": "user:rp-ir"
+    }
+  ]
+}

@@ -1,0 +1,430 @@
+{
+  "source_system": "gips-reporting",
+  "extract_timestamp": "2026-03-15T07:00:00Z",
+  "description": "GIPS Reporting & Custodian reconciliation extract: Valid difference-of-scope fund mappings (CRM vs Reporting vs Cash-Flow), 3-way admin-code N-way ConflictSet (non-overwriting approved_fact), restricted side-letter evidence ACL stub, and bitemporal Q4 2025 NAV/IRR restatement.",
+  "claims": [
+    {
+      "claim_id": "clm-scope-crm-alpha-family",
+      "subject_id": "ent:skill-crm-fund-mapping",
+      "predicate": "maps_as",
+      "object_value": "fam:alpha-credit-family",
+      "object_entity_id": "ent:fam-alpha-credit",
+      "context_purpose": "fund_family",
+      "scope_type": "skill",
+      "scope_id": "skill:crm-fund-mapping",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "crm-extract",
+        "evidence_uri": "fixtures/legacy_skills/crm_fund_lookup.csv",
+        "span_locator": "row=2",
+        "excerpt": "CRM maps Alpha Credit inquiries to Fund Family fam:alpha-credit-family (SF-FAM-00412) by design."
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T10:00:00Z",
+      "superseded_at": null,
+      "created_by": "user:fund-steward"
+    },
+    {
+      "claim_id": "clm-scope-reporting-alpha-gips",
+      "subject_id": "ent:skill-gips-reporting",
+      "predicate": "maps_as",
+      "object_value": "grp:alpha-credit-gips-composite",
+      "object_entity_id": "ent:grp-alpha-gips",
+      "context_purpose": "consolidated_group",
+      "scope_type": "skill",
+      "scope_id": "skill:gips-portfolio-reporting",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "gips-reporting",
+        "evidence_uri": "fixtures/legacy_skills/reporting_group_lookup.json",
+        "span_locator": "mappings[0]",
+        "excerpt": "Portfolio Reporting maps Alpha Credit to consolidated GIPS composite grp:alpha-credit-gips-composite (GIPS-AC-COMP-01) by design."
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T10:00:00Z",
+      "superseded_at": null,
+      "created_by": "user:fund-steward"
+    },
+    {
+      "claim_id": "clm-scope-cashflow-alpha-vehicle",
+      "subject_id": "ent:skill-cashflow-recon",
+      "predicate": "maps_as",
+      "object_value": "veh:alpha-credit-offshore-lp",
+      "object_entity_id": "ent:veh-alpha-offshore",
+      "context_purpose": "legal_vehicle",
+      "scope_type": "skill",
+      "scope_id": "skill:cashflow-wire-reconciliation",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/legacy_skills/cashflow_vehicle_lookup.csv",
+        "span_locator": "row=2",
+        "excerpt": "Cash-Flow Wire Reconciliation maps strictly to legal vehicle veh:alpha-credit-offshore-lp for bank/custodian wire instructions."
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T10:00:00Z",
+      "superseded_at": null,
+      "created_by": "user:fund-steward"
+    },
+    {
+      "claim_id": "clm-admin-code-approved",
+      "subject_id": "ent:veh-alpha-offshore",
+      "predicate": "has_admin_code",
+      "object_value": "ADM-904",
+      "object_entity_id": null,
+      "context_purpose": "legal_vehicle",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entity_identifiers[2]",
+        "excerpt": "Northern Trust administrator feed asserts canonical legal vehicle code ADM-904 for Alpha Credit Offshore LP (Cayman)."
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T08:00:00Z",
+      "superseded_at": null,
+      "created_by": "user:fund-steward"
+    },
+    {
+      "claim_id": "clm-admin-code-custodian",
+      "subject_id": "ent:veh-alpha-offshore",
+      "predicate": "has_admin_code",
+      "object_value": "ADM-904X",
+      "object_entity_id": null,
+      "context_purpose": "legal_vehicle",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "disputed",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "unaudited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "manual_upload"
+      },
+      "provenance": {
+        "source_system": "custodian-feed",
+        "evidence_uri": "fixtures/uploads/alpha_credit_lp_side_letter.pdf",
+        "span_locator": "page=1,section=2",
+        "excerpt": "Custodian Side Letter Addendum confirms segregated sleeve code ADM-904X effective 2026-01-01 with MFN fee cap (CANARY_SIDELETTER_MFN_FEE_4091)."
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["custodian-legal-docs"]
+      },
+      "valid_from": "2026-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2026-03-01T11:20:00Z",
+      "superseded_at": null,
+      "created_by": "system:custodian-ingest"
+    },
+    {
+      "claim_id": "clm-admin-code-gips",
+      "subject_id": "ent:veh-alpha-offshore",
+      "predicate": "has_admin_code",
+      "object_value": "ADM-904-GIPS",
+      "object_entity_id": null,
+      "context_purpose": "legal_vehicle",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "disputed",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "prelim",
+        "periodicity": "quarterly",
+        "fiscal_period": "2026-Q1",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "gips-reporting",
+        "evidence_uri": "fixtures/legacy_skills/reporting_group_lookup.json",
+        "span_locator": "mappings[0].legacy_offshore_code",
+        "excerpt": "GIPS quarterly reporting extract asserts sub-account code ADM-904-GIPS for Alpha Credit Offshore LP."
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2026-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2026-03-14T16:45:00Z",
+      "superseded_at": null,
+      "created_by": "system:gips-reconciler"
+    },
+    {
+      "claim_id": "clm-q4-2025-nav-prelim",
+      "subject_id": "ent:grp-alpha-gips",
+      "predicate": "composite_nav_usd",
+      "object_value": "1284500000",
+      "object_entity_id": null,
+      "context_purpose": "consolidated_group",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "financial",
+        "modality": "quantitative",
+        "numeric_value": 1284500000.0,
+        "unit": "usd",
+        "currency": "USD",
+        "accounting_basis": "gips",
+        "epistemic_temporal": "actual",
+        "actual_stage": "prelim",
+        "periodicity": "quarterly",
+        "fiscal_period": "2025-Q4",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "gips-reporting",
+        "evidence_uri": "fixtures/baselines/baseline_q4_2025_pre_restatement.json",
+        "span_locator": "metrics.composite_nav_usd",
+        "excerpt": "Preliminary Q4 2025 GIPS composite NAV prior to Apex Industrial LME valuation markdown."
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2025-12-31T00:00:00Z",
+      "valid_to": "2026-03-31T00:00:00Z",
+      "recorded_at": "2026-01-15T18:00:00Z",
+      "superseded_at": "2026-02-20T14:30:00Z",
+      "superseded_by": "clm-q4-2025-nav-restated",
+      "created_by": "user:fund-steward"
+    },
+    {
+      "claim_id": "clm-q4-2025-nav-restated",
+      "subject_id": "ent:grp-alpha-gips",
+      "predicate": "composite_nav_usd",
+      "object_value": "1281900000",
+      "object_entity_id": null,
+      "context_purpose": "consolidated_group",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "financial",
+        "modality": "quantitative",
+        "numeric_value": 1281900000.0,
+        "unit": "usd",
+        "currency": "USD",
+        "accounting_basis": "gips",
+        "epistemic_temporal": "actual",
+        "actual_stage": "restated",
+        "periodicity": "quarterly",
+        "fiscal_period": "2025-Q4",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "gips-reporting",
+        "evidence_uri": "fixtures/baselines/baseline_q4_2025_post_restatement.json",
+        "span_locator": "metrics.composite_nav_usd",
+        "excerpt": "Restated Q4 2025 GIPS composite NAV reflecting -$2.6M audit valuation adjustment on Apex Industrial 1L TLB."
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2025-12-31T00:00:00Z",
+      "valid_to": "2026-03-31T00:00:00Z",
+      "recorded_at": "2026-02-20T14:30:00Z",
+      "superseded_at": null,
+      "created_by": "user:fund-steward"
+    },
+    {
+      "claim_id": "clm-q4-2025-irr-prelim",
+      "subject_id": "ent:grp-alpha-gips",
+      "predicate": "composite_net_irr_pct",
+      "object_value": "11.42",
+      "object_entity_id": null,
+      "context_purpose": "consolidated_group",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "financial",
+        "modality": "quantitative",
+        "numeric_value": 11.42,
+        "unit": "pct",
+        "currency": "USD",
+        "accounting_basis": "nav_net",
+        "epistemic_temporal": "actual",
+        "actual_stage": "prelim",
+        "periodicity": "quarterly",
+        "fiscal_period": "2025-Q4",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "gips-reporting",
+        "evidence_uri": "fixtures/baselines/baseline_q4_2025_pre_restatement.json",
+        "span_locator": "metrics.composite_net_irr_pct"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2025-12-31T00:00:00Z",
+      "valid_to": "2026-03-31T00:00:00Z",
+      "recorded_at": "2026-01-15T18:00:00Z",
+      "superseded_at": "2026-02-20T14:30:00Z",
+      "superseded_by": "clm-q4-2025-irr-restated",
+      "created_by": "user:fund-steward"
+    },
+    {
+      "claim_id": "clm-q4-2025-irr-restated",
+      "subject_id": "ent:grp-alpha-gips",
+      "predicate": "composite_net_irr_pct",
+      "object_value": "11.28",
+      "object_entity_id": null,
+      "context_purpose": "consolidated_group",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "financial",
+        "modality": "quantitative",
+        "numeric_value": 11.28,
+        "unit": "pct",
+        "currency": "USD",
+        "accounting_basis": "nav_net",
+        "epistemic_temporal": "actual",
+        "actual_stage": "restated",
+        "periodicity": "quarterly",
+        "fiscal_period": "2025-Q4",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "gips-reporting",
+        "evidence_uri": "fixtures/baselines/baseline_q4_2025_post_restatement.json",
+        "span_locator": "metrics.composite_net_irr_pct"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2025-12-31T00:00:00Z",
+      "valid_to": "2026-03-31T00:00:00Z",
+      "recorded_at": "2026-02-20T14:30:00Z",
+      "superseded_at": null,
+      "created_by": "user:fund-steward"
+    }
+  ],
+  "conflict_sets": [
+    {
+      "conflict_set_id": "conflict-alpha-admin-code-3way",
+      "subject_id": "ent:veh-alpha-offshore",
+      "predicate": "has_admin_code",
+      "context_purpose": "legal_vehicle",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "status": "open",
+      "claim_ids": [
+        "clm-admin-code-approved",
+        "clm-admin-code-custodian",
+        "clm-admin-code-gips"
+      ],
+      "winning_claim_id": null,
+      "resolution_rationale": null,
+      "resolved_by": null,
+      "resolved_at": null,
+      "created_at": "2026-03-01T11:20:00Z",
+      "summary": "3-way disagreement on Alpha Credit Offshore LP administrator code effective 2026-01-01: Northern Trust (ADM-904, currently approved), BNY Custodian Side Letter (ADM-904X, restricted evidence), and GIPS Reporting Extract (ADM-904-GIPS)."
+    }
+  ]
+}

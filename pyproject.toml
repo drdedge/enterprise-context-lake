@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "enterprise-context-lake"
+version = "0.1.0"
+description = "Enterprise Context Lake — bitemporal institutional knowledge substrate, hexagonal adapters, dual FastMCP/Code Mode, DeepAgents harness, and diagnostic workspace"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "sqlalchemy>=2.0.36",
+    "aiosqlite>=0.20.0",
+    "greenlet>=3.1.0",
+    "pydantic>=2.10.0",
+    "httpx>=0.28.0",
+    "pyyaml>=6.0.2",
+    "pyjwt>=2.10.0",
+    "cryptography>=44.0.0",
+    "cachetools>=5.5.0",
+    "python-multipart>=0.0.20",
+    "pypdf>=5.0.0",
+    "sse-starlette>=2.2.0",
+    "python-dotenv>=1.0.1",
+    "mcp>=2.0.0",
+    "fastmcp>=4.0.0",
+    "langchain>=1.5.0",
+    "deepagents>=0.7.0",
+    "langgraph>=1.2.0",
+    "langchain-google-genai>=4.5.0",
+    "google-genai>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+]
+
+[tool.setuptools]
+packages = [
+    "context_core",
+    "context_adapters",
+    "context_api",
+    "context_mcp",
+    "context_sdk",
+    "context_agents",
+]
+
+[tool.setuptools.package-dir]
+context_core = "packages/core/context_core"
+context_adapters = "packages/adapters/context_adapters"
+context_api = "packages/api/context_api"
+context_mcp = "packages/mcp/context_mcp"
+context_sdk = "packages/sdk/context_sdk"
+context_agents = "packages/agents/context_agents"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = [
+    "packages/core",
+    "packages/adapters",
+    "packages/api",
+    "packages/mcp",
+    "packages/sdk",
+    "packages/agents",
+]

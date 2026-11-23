@@ -1,0 +1,38 @@
+{
+  "baseline_id": "baseline-q4-2025-pre-restatement",
+  "report_title": "Alpha Credit Q4 2025 Preliminary Investor Letter",
+  "as_of": "2025-12-31T23:59:59Z",
+  "recorded_as_of": "2026-01-20T00:00:00Z",
+  "expected_facts": {
+    "grp:alpha-credit-gips-composite": {
+      "composite_nav_usd": {
+        "object_value": "1284500000",
+        "claim_id": "clm-q4-2025-nav-prelim",
+        "actual_stage": "prelim"
+      },
+      "composite_net_irr_pct": {
+        "object_value": "11.42",
+        "claim_id": "clm-q4-2025-irr-prelim",
+        "actual_stage": "prelim"
+      }
+    },
+    "veh:alpha-credit-offshore-lp": {
+      "has_admin_code": {
+        "object_value": "ADM-904",
+        "claim_id": "clm-admin-code-approved"
+      },
+      "legal_display_name": {
+        "object_value": "Alpha Credit Offshore LP (Cayman)",
+        "claim_id": "clm-alpha-offshore-name-post-rename"
+      }
+    }
+  },
+  "metrics": {
+    "composite_nav_usd": 1284500000,
+    "composite_net_irr_pct": 11.42
+  },
+  "assertions": [
+    "Must return pre-restatement prelim NAV (1284500000) and IRR (11.42) when recorded_as_of=2026-01-20 even after the 2026-02-20 restatement supersedes them (verifies fix of PDF Defect #2).",
+    "Must NOT return ADM-904X or ADM-904-GIPS (both recorded March 2026)."
+  ]
+}

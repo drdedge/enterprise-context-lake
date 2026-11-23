@@ -1,0 +1,48 @@
+# Python environments & caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Node / Frontend
+node_modules/
+apps/web/dist/
+apps/web/.vite/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Local runtime state, databases, compiled snapshots, agent scratch, and secrets
+.agents/
+data/local/
+data/runtime/
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.zst
+.env
+.env.local
+.env.*.local
+
+# Test & browser verification outputs
+playwright-report/
+test-results/
+blob-report/
+
+# OS / Editor artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/

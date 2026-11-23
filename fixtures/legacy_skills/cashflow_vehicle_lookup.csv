@@ -1,0 +1,5 @@
+fund_query_name,legal_vehicle_key,legal_vehicle_name,admin_code,custodian,domicile,wire_currency,valid_from
+Alpha Credit Offshore,veh:alpha-credit-offshore-lp,Alpha Credit Offshore LP (Cayman),ADM-904,BNY Mellon,KY,USD,2024-07-01
+Alpha Credit Onshore,veh:alpha-credit-onshore-lp,Alpha Credit Onshore Feeder LP (Delaware),ADM-903,BNY Mellon,US-DE,USD,2024-07-01
+Alpha Credit Master,veh:alpha-credit-master-lp,Alpha Credit Master Fund LP,ADM-901,BNY Mellon,KY,USD,2024-01-01
+Northstar Direct Lending II,veh:northstar-dl-ii-lp,Northstar Direct Lending II LP (Delaware),CITCO-NSDL2-01,State Street,US-DE,USD,2025-01-15

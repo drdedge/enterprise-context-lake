@@ -1,0 +1,29 @@
+{
+  "skill_id": "skill:gips-portfolio-reporting",
+  "legacy_table_version": "2026.03.14-embedded",
+  "purpose": "consolidated_group",
+  "mappings": [
+    {
+      "fund_query_name": "Alpha Credit",
+      "reporting_group_key": "grp:alpha-credit-gips-composite",
+      "gips_code": "GIPS-AC-COMP-01",
+      "display_name": "Alpha Credit Master Consolidated (GIPS Composite)",
+      "included_vehicles": [
+        "veh:alpha-credit-master-lp",
+        "veh:alpha-credit-onshore-lp",
+        "veh:alpha-credit-offshore-lp"
+      ],
+      "legacy_offshore_code": "ADM-904-GIPS",
+      "valid_from": "2024-07-01"
+    },
+    {
+      "fund_query_name": "Northstar Direct Lending II",
+      "reporting_group_key": "veh:northstar-dl-ii-lp",
+      "gips_code": "GIPS-NSDL2-01",
+      "display_name": "Northstar Direct Lending II LP (Delaware)",
+      "included_vehicles": ["veh:northstar-dl-ii-lp"],
+      "legacy_offshore_code": "CITCO-NSDL2-01",
+      "valid_from": "2025-01-15"
+    }
+  ]
+}

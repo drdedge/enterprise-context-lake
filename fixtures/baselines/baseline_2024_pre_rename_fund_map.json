@@ -1,0 +1,21 @@
+{
+  "baseline_id": "baseline-2024-pre-rename-fund-map",
+  "report_title": "Mid-Year 2024 Pre-Rename Fund Mapping Snapshot",
+  "as_of": "2024-06-15T00:00:00Z",
+  "recorded_as_of": "2024-06-20T00:00:00Z",
+  "expected_facts": {
+    "veh:alpha-credit-offshore-lp": {
+      "legal_display_name": {
+        "object_value": "Meridian Opportunistic Credit Offshore LP",
+        "claim_id": "clm-alpha-offshore-name-pre-rename"
+      }
+    },
+    "veh:meridian-opp-credit-offshore-legacy": {
+      "admin_code_identifier": "MOC-704"
+    }
+  },
+  "assertions": [
+    "Must return historical pre-rename legal vehicle name 'Meridian Opportunistic Credit Offshore LP' for business date 2024-06-15.",
+    "Must preserve entity lineage link 'lin-alpha-offshore-rename-2024' (renamed_from) and historical identifier MOC-704."
+  ]
+}

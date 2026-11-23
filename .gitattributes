@@ -1,0 +1,52 @@
+# Enforce LF line endings across Windows and Linux for deterministic SHA-256 evidence hashes
+* text=auto eol=lf
+
+# Source code
+*.py text eol=lf
+*.pyi text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.sql text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
+
+# Knowledge artifacts, OKF Markdown, structured configs, and fixtures
+*.md text eol=lf
+*.okf text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.toml text eol=lf
+*.csv text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+*.env.example text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+
+# Binary assets (never alter line endings)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.gz binary
+*.tgz binary
+*.zip binary
+*.zst binary
+*.sqlite binary
+*.sqlite3 binary
+*.db binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

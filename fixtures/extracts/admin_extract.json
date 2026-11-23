@@ -1,0 +1,702 @@
+{
+  "source_system": "admin-feed",
+  "extract_timestamp": "2026-03-15T06:00:00Z",
+  "description": "Fund administration master hierarchy, share classes, bitemporal identifier crosswalks, historical renames, and official administrator codes.",
+  "entities": [
+    {
+      "entity_id": "ent:strat-opportunistic-credit",
+      "entity_type": "strategy",
+      "canonical_key": "strat:opportunistic-credit",
+      "display_name": "Opportunistic & Special Situations Credit",
+      "aliases": ["Opp Credit", "Special Sits Credit"],
+      "description": "Flagship multi-cycle corporate credit strategy investing across performing, stressed, and event-driven debt.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "asset_class": "credit", "inception_date": "2019-01-01", "base_currency": "USD" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:strat-direct-lending",
+      "entity_type": "strategy",
+      "canonical_key": "strat:direct-lending",
+      "display_name": "Northstar Senior Direct Lending",
+      "aliases": ["Direct Lending", "NSDL"],
+      "description": "Sponsor-backed senior secured private credit origination strategy targeting upper middle-market borrowers.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "asset_class": "private_credit", "inception_date": "2021-04-01", "base_currency": "USD" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:fam-alpha-credit",
+      "entity_type": "fund_family",
+      "canonical_key": "fam:alpha-credit-family",
+      "display_name": "Alpha Credit Family",
+      "aliases": ["Alpha Credit", "ACF", "Alpha Credit Series"],
+      "description": "CRM-facing fund family grouping Alpha Credit Master, Onshore Feeder, and Offshore Feeder vehicles.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "strategy_key": "strat:opportunistic-credit", "vintage": 2024, "target_size_usd": 1500000000 },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:fam-northstar-dl",
+      "entity_type": "fund_family",
+      "canonical_key": "fam:northstar-dl-family",
+      "display_name": "Northstar Direct Lending II Family",
+      "aliases": ["Northstar DL II", "NSDL II"],
+      "description": "Second-vintage sponsor-backed senior direct lending fund family.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "strategy_key": "strat:direct-lending", "vintage": 2025, "target_size_usd": 2000000000 },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:grp-alpha-gips",
+      "entity_type": "reporting_group",
+      "canonical_key": "grp:alpha-credit-gips-composite",
+      "display_name": "Alpha Credit Master Consolidated (GIPS Composite)",
+      "aliases": ["Alpha Consolidated", "GIPS-AC-COMP-01", "Alpha Credit Reporting Group"],
+      "description": "GIPS-compliant consolidated reporting composite combining Alpha Credit Master and feeder vehicles for quarterly investor reporting.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "gips_composite_code": "GIPS-AC-COMP-01", "reporting_frequency": "quarterly", "benchmark_key": "idx:ice-bofa-us-hy" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:veh-alpha-master",
+      "entity_type": "legal_vehicle",
+      "canonical_key": "veh:alpha-credit-master-lp",
+      "display_name": "Alpha Credit Master Fund LP",
+      "aliases": ["Alpha Master", "ACM LP"],
+      "description": "Cayman exempted limited partnership master fund executing all portfolio trades for the Alpha Credit strategy.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "vehicle_role": "master", "domicile": "KY", "administrator": "Northern Trust", "custodian": "BNY Mellon" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:veh-alpha-onshore",
+      "entity_type": "legal_vehicle",
+      "canonical_key": "veh:alpha-credit-onshore-lp",
+      "display_name": "Alpha Credit Onshore Feeder LP (Delaware)",
+      "aliases": ["Alpha Onshore", "ACOF-US"],
+      "description": "Delaware limited partnership feeder vehicle for US taxable institutional investors.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "vehicle_role": "onshore_feeder", "domicile": "US-DE", "administrator": "Northern Trust", "custodian": "BNY Mellon" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:veh-alpha-offshore",
+      "entity_type": "legal_vehicle",
+      "canonical_key": "veh:alpha-credit-offshore-lp",
+      "display_name": "Alpha Credit Offshore LP (Cayman)",
+      "aliases": [
+        "Alpha Credit III Offshore",
+        "Alpha Offshore LP",
+        "Meridian Opportunistic Credit Offshore LP",
+        "ACOF-KY"
+      ],
+      "description": "Cayman Islands feeder LP for non-US and US tax-exempt institutional LPs; renamed from Meridian Opportunistic Credit Offshore LP on 2024-07-01.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "vehicle_role": "offshore_feeder", "domicile": "KY", "administrator": "Northern Trust", "custodian": "BNY Mellon" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:veh-alpha-offshore-legacy",
+      "entity_type": "legal_vehicle",
+      "canonical_key": "veh:meridian-opp-credit-offshore-legacy",
+      "display_name": "Meridian Opportunistic Credit Offshore LP (Historical Pre-Rename)",
+      "aliases": ["MOC Offshore LP", "Meridian Opp Credit KY"],
+      "description": "Historical legal name prior to the 2024-07-01 brand unification into Alpha Credit Offshore LP (Cayman).",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "vehicle_role": "offshore_feeder", "domicile": "KY", "retired_date": "2024-07-01" },
+      "status": "inactive"
+    },
+    {
+      "entity_id": "ent:veh-northstar-dl-ii",
+      "entity_type": "legal_vehicle",
+      "canonical_key": "veh:northstar-dl-ii-lp",
+      "display_name": "Northstar Direct Lending II LP (Delaware)",
+      "aliases": ["NSDL II LP", "Northstar DL II"],
+      "description": "Closed-end Delaware private credit drawdown partnership investing in first-lien sponsor-backed loans.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "vehicle_role": "standalone_drawdown", "domicile": "US-DE", "administrator": "Citco", "custodian": "State Street" },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:sc-alpha-offshore-inst-a",
+      "entity_type": "share_class",
+      "canonical_key": "sc:alpha-offshore-class-a-usd",
+      "display_name": "Alpha Credit Offshore LP — Class A Institutional (USD)",
+      "aliases": ["ACOF Class A", "Class A USD"],
+      "description": "Standard institutional share class (1.25% management fee, 15% performance allocation over 6% hurdle).",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "currency": "USD", "mgmt_fee_bps": 125, "carry_pct": 15.0, "hurdle_pct": 6.0 },
+      "status": "active"
+    },
+    {
+      "entity_id": "ent:sc-alpha-offshore-founder-f",
+      "entity_type": "share_class",
+      "canonical_key": "sc:alpha-offshore-class-f-founder",
+      "display_name": "Alpha Credit Offshore LP — Class F Founder (USD)",
+      "aliases": ["ACOF Class F", "Founder Class"],
+      "description": "Anchor institutional founder class with discounted fee tier (0.85% management fee, 12.5% carry) subject to MFN side letters.",
+      "owner_group": "fund-stewards",
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"],
+      "write_acl_groups": ["fund-stewards"],
+      "attributes": { "currency": "USD", "mgmt_fee_bps": 85, "carry_pct": 12.5, "hurdle_pct": 6.0 },
+      "status": "active"
+    }
+  ],
+  "entity_identifiers": [
+    {
+      "id": "ident-veh-alpha-master-lei",
+      "entity_id": "ent:veh-alpha-master",
+      "scheme": "lei",
+      "identifier_value": "549300ALPHA001MSTR01",
+      "authority": "GLEIF",
+      "is_primary": true,
+      "valid_from": "2024-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-01-05T12:00:00Z",
+      "superseded_at": null
+    },
+    {
+      "id": "ident-veh-alpha-offshore-lei",
+      "entity_id": "ent:veh-alpha-offshore",
+      "scheme": "lei",
+      "identifier_value": "549300ALPHA003OFFS03",
+      "authority": "GLEIF",
+      "is_primary": true,
+      "valid_from": "2024-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-01-05T12:00:00Z",
+      "superseded_at": null
+    },
+    {
+      "id": "ident-veh-alpha-offshore-admin-904",
+      "entity_id": "ent:veh-alpha-offshore",
+      "scheme": "admin_code",
+      "identifier_value": "ADM-904",
+      "authority": "Northern Trust",
+      "is_primary": true,
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T08:00:00Z",
+      "superseded_at": null
+    },
+    {
+      "id": "ident-veh-alpha-offshore-pre-rename-admin",
+      "entity_id": "ent:veh-alpha-offshore-legacy",
+      "scheme": "admin_code",
+      "identifier_value": "MOC-704",
+      "authority": "Northern Trust",
+      "is_primary": true,
+      "valid_from": "2022-01-01T00:00:00Z",
+      "valid_to": "2024-07-01T00:00:00Z",
+      "recorded_at": "2022-01-05T08:00:00Z",
+      "superseded_at": null
+    },
+    {
+      "id": "ident-veh-alpha-onshore-admin",
+      "entity_id": "ent:veh-alpha-onshore",
+      "scheme": "admin_code",
+      "identifier_value": "ADM-903",
+      "authority": "Northern Trust",
+      "is_primary": true,
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T08:00:00Z",
+      "superseded_at": null
+    },
+    {
+      "id": "ident-grp-alpha-gips",
+      "entity_id": "ent:grp-alpha-gips",
+      "scheme": "gips_code",
+      "identifier_value": "GIPS-AC-COMP-01",
+      "authority": "Meridian GIPS Committee",
+      "is_primary": true,
+      "valid_from": "2024-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-01-10T00:00:00Z",
+      "superseded_at": null
+    },
+    {
+      "id": "ident-fam-alpha-crm",
+      "entity_id": "ent:fam-alpha-credit",
+      "scheme": "crm_id",
+      "identifier_value": "SF-FAM-00412",
+      "authority": "Salesforce Institutional CRM",
+      "is_primary": true,
+      "valid_from": "2024-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-01-10T00:00:00Z",
+      "superseded_at": null
+    },
+    {
+      "id": "ident-veh-northstar-admin",
+      "entity_id": "ent:veh-northstar-dl-ii",
+      "scheme": "admin_code",
+      "identifier_value": "CITCO-NSDL2-01",
+      "authority": "Citco Fund Services",
+      "is_primary": true,
+      "valid_from": "2025-01-15T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2025-01-15T09:00:00Z",
+      "superseded_at": null
+    }
+  ],
+  "lineage_events": [
+    {
+      "event_id": "lin-alpha-offshore-rename-2024",
+      "source_entity_id": "ent:veh-alpha-offshore",
+      "target_entity_id": "ent:veh-alpha-offshore-legacy",
+      "event_type": "renamed_from",
+      "effective_date": "2024-07-01T00:00:00Z",
+      "recorded_at": "2024-07-01T09:30:00Z",
+      "summary": "Cayman Registrar certificate of name change unifying Meridian Opportunistic Credit Offshore LP into Alpha Credit Offshore LP (Cayman); LEI 549300ALPHA003OFFS03 unchanged.",
+      "evidence_uri": "fixtures/extracts/admin_extract.json",
+      "evidence_acl_groups": ["firm-all"],
+      "wall_side": "public_side",
+      "read_acl_groups": ["firm-all"]
+    }
+  ],
+  "structural_claims": [
+    {
+      "claim_id": "clm-struct-strat-fam-alpha",
+      "subject_id": "ent:strat-opportunistic-credit",
+      "predicate": "has_fund_family",
+      "object_value": "fam:alpha-credit-family",
+      "object_entity_id": "ent:fam-alpha-credit",
+      "context_purpose": "general",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entities[2]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-01-05T12:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-struct-fam-grp-alpha",
+      "subject_id": "ent:fam-alpha-credit",
+      "predicate": "has_reporting_group",
+      "object_value": "grp:alpha-credit-gips-composite",
+      "object_entity_id": "ent:grp-alpha-gips",
+      "context_purpose": "consolidated_group",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entities[4]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-01-05T12:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-struct-grp-veh-master",
+      "subject_id": "ent:grp-alpha-gips",
+      "predicate": "includes_vehicle",
+      "object_value": "veh:alpha-credit-master-lp",
+      "object_entity_id": "ent:veh-alpha-master",
+      "context_purpose": "consolidated_group",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entities[5]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-01-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-01-05T12:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-struct-grp-veh-onshore",
+      "subject_id": "ent:grp-alpha-gips",
+      "predicate": "includes_vehicle",
+      "object_value": "veh:alpha-credit-onshore-lp",
+      "object_entity_id": "ent:veh-alpha-onshore",
+      "context_purpose": "consolidated_group",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entities[6]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T08:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-struct-grp-veh-offshore",
+      "subject_id": "ent:grp-alpha-gips",
+      "predicate": "includes_vehicle",
+      "object_value": "veh:alpha-credit-offshore-lp",
+      "object_entity_id": "ent:veh-alpha-offshore",
+      "context_purpose": "consolidated_group",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entities[7]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T08:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-struct-veh-sc-a",
+      "subject_id": "ent:veh-alpha-offshore",
+      "predicate": "has_share_class",
+      "object_value": "sc:alpha-offshore-class-a-usd",
+      "object_entity_id": "ent:sc-alpha-offshore-inst-a",
+      "context_purpose": "general",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entities[10]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T08:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-struct-veh-sc-f",
+      "subject_id": "ent:veh-alpha-offshore",
+      "predicate": "has_share_class",
+      "object_value": "sc:alpha-offshore-class-f-founder",
+      "object_entity_id": "ent:sc-alpha-offshore-founder-f",
+      "context_purpose": "general",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entities[11]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T08:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-alpha-offshore-name-pre-rename",
+      "subject_id": "ent:veh-alpha-offshore",
+      "predicate": "legal_display_name",
+      "object_value": "Meridian Opportunistic Credit Offshore LP",
+      "object_entity_id": null,
+      "context_purpose": "legal_vehicle",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "lineage_events[0]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2022-01-01T00:00:00Z",
+      "valid_to": "2024-07-01T00:00:00Z",
+      "recorded_at": "2022-01-05T08:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-alpha-offshore-name-post-rename",
+      "subject_id": "ent:veh-alpha-offshore",
+      "predicate": "legal_display_name",
+      "object_value": "Alpha Credit Offshore LP (Cayman)",
+      "object_entity_id": null,
+      "context_purpose": "legal_vehicle",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "lineage_events[0]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2024-07-01T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2024-07-01T09:30:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-struct-strat-dl-fam",
+      "subject_id": "ent:strat-direct-lending",
+      "predicate": "has_fund_family",
+      "object_value": "fam:northstar-dl-family",
+      "object_entity_id": "ent:fam-northstar-dl",
+      "context_purpose": "general",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entities[3]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2025-01-15T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2025-01-15T09:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    },
+    {
+      "claim_id": "clm-struct-fam-dl-veh",
+      "subject_id": "ent:fam-northstar-dl",
+      "predicate": "includes_vehicle",
+      "object_value": "veh:northstar-dl-ii-lp",
+      "object_entity_id": "ent:veh-northstar-dl-ii",
+      "context_purpose": "legal_vehicle",
+      "scope_type": "firm",
+      "scope_id": "firm",
+      "channel": "fact",
+      "epistemic_status": "approved_fact",
+      "is_mandatory": false,
+      "facets": {
+        "domain_nature": "non_financial",
+        "modality": "qualitative",
+        "epistemic_temporal": "actual",
+        "actual_stage": "audited",
+        "periodicity": "evergreen",
+        "ingestion_channel": "automated_feed"
+      },
+      "provenance": {
+        "source_system": "admin-feed",
+        "evidence_uri": "fixtures/extracts/admin_extract.json",
+        "span_locator": "entities[9]"
+      },
+      "acl": {
+        "wall_side": "public_side",
+        "read_acl_groups": ["firm-all"],
+        "write_acl_groups": ["fund-stewards"],
+        "evidence_acl_groups": ["firm-all"]
+      },
+      "valid_from": "2025-01-15T00:00:00Z",
+      "valid_to": null,
+      "recorded_at": "2025-01-15T09:00:00Z",
+      "superseded_at": null,
+      "created_by": "system:admin-sync"
+    }
+  ]
+}
