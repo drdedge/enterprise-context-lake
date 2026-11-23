@@ -1,0 +1,16 @@
+{
+  "name": "enterprise-context-lake-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright + axe-core WCAG 2.2 AA end-to-end oracle for Enterprise Context Lake",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "install:browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.52.0",
+    "@types/node": "^26.6.6",
+    "typescript": "^5.8.2"
+  }
+}
