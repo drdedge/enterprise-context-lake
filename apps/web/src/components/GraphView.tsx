@@ -426,12 +426,25 @@ export function GraphView({
 
   // Auto-fit cleanly whenever lens or node set changes
   const graphSignature = `${lens}:${visibleNodes.length}:${graph?.data_epoch ?? 0}`;
+  // While a large layout is computing in the worker, the positions are stale; defer the fit until it lands
+  const fitPendingRef = useRef(false);
   useEffect(() => {
     if (visibleNodes.length > 0 && !stickyDirectionActive && !impactTrace) {
-      fitToView();
+      if (layoutPending) {
+        fitPendingRef.current = true;
+      } else {
+        fitToView();
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graphSignature, viewportSize.width, viewportSize.height]);
+  useEffect(() => {
+    if (!layoutPending && fitPendingRef.current) {
+      fitPendingRef.current = false;
+      if (!stickyDirectionActive && !impactTrace) fitToView();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutPending, fitToView]);
 
   // Trigger Impact BFS
   const runImpactBfs = async (nodeId: string) => {

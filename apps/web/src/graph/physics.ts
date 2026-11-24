@@ -397,31 +397,9 @@ export function computeDeterministicLayout(
       fy[i] -= ys[i] * centerGravity;
     }
 
-    // Anisotropic label-aware collision padding between connected nodes.
-    // Only pairs closer than (minSepX, minSepY) interact, so bucket nodes into a grid of that cell
-    // size and test the 3x3 neighbouring cells instead of every pair (O(n) instead of O(n^2)).
-    // Pairs are still visited in ascending (i, j) order, so the result is bit-identical.
-    const grid = new Map<string, number[]>();
+    // Anisotropic label-aware collision padding between connected nodes
     for (let i = 0; i < nCount; i++) {
-      const key = `${Math.floor(xs[i] / minSepX)},${Math.floor(ys[i] / minSepY)}`;
-      const cell = grid.get(key);
-      if (cell) cell.push(i);
-      else grid.set(key, [i]);
-    }
-    const candidates: number[] = [];
-    for (let i = 0; i < nCount; i++) {
-      const cx = Math.floor(xs[i] / minSepX);
-      const cy = Math.floor(ys[i] / minSepY);
-      candidates.length = 0;
-      for (let gx = cx - 1; gx <= cx + 1; gx++) {
-        for (let gy = cy - 1; gy <= cy + 1; gy++) {
-          const cell = grid.get(`${gx},${gy}`);
-          if (!cell) continue;
-          for (const j of cell) if (j > i) candidates.push(j);
-        }
-      }
-      candidates.sort((a, b) => a - b);
-      for (const j of candidates) {
+      for (let j = i + 1; j < nCount; j++) {
         const dx = xs[j] - xs[i];
         const dy = ys[j] - ys[i];
         const ax = Math.abs(dx);
