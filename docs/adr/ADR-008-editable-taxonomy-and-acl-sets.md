@@ -57,10 +57,10 @@ Because the number of distinct ACL sets is small (tens, not thousands), the subq
 - Data arriving from uploads and agents is never rejected for using a new category.
 - Stewards get a queue of proposed terms and a history of every change.
 - The Markdown vault store still checks access in Python; its scale does not need more.
+- Entity page templates (ADR-009) follow the same tree: a template for `product` applies to `legal_vehicle` unless a more specific template exists. `WikiService` reads the parent lookup from the store's vocabulary unless one is passed in.
 - The SQL Server adapter can reuse the same tables and the same subquery.
 
 ## Follow-ups
 
 - SQL Server adapter (tables in the lake's own schema; same `acl_sets` design).
 - A taxonomy screen in the UI (tree, proposed queue, merge).
-- Pass the entity-type parent lookup into `WikiService` once the wiki work lands.

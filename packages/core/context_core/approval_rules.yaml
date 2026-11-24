@@ -12,7 +12,7 @@
 #   kinds:              change | revert
 #   record_types:       entity | knowledge_item | topic | claim | memory | watchlist | vocab_term
 #   ops:                upsert | delete | claim_create | claim_update
-#   sources:            ui | api | harness | agent | upload | import | system
+#   sources:            ui | api | harness | agent | upload | import | system | context_hub
 #   wall_sides:         wall side of the record after the change
 #   epistemic_statuses: claim status after the change
 #   privileged:         true when a claim change creates or edits an approved fact or a mandatory
@@ -39,6 +39,13 @@ rules:
     approval: review
     approvers: ["group:compliance-oversight", "steward"]
     min_approvals: 2
+
+  - id: context-hub-import
+    description: Edits imported from LangSmith Context Hub always need a steward other than the importer.
+    match: {sources: [context_hub]}
+    approval: review
+    approvers: [steward]
+    min_approvals: 1
 
   - id: personal-owner
     description: People edit their own personal memory and watchlist freely.

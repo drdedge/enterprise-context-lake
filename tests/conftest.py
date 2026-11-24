@@ -35,10 +35,18 @@ for _pkg in ("core", "adapters", "api", "mcp", "sdk", "agents"):
 def enforce_offline_env() -> None:
     """Guarantee all tests run 100% offline with zero external LLM API keys."""
     os.environ["AUTH_MODE"] = "mock"
+    os.environ.pop("CONTEXT_HUB_BACKEND", None)  # always the local folder emulation in tests
     os.environ["LLM_MODE"] = "deterministic"
     os.environ["CONTEXT_LAKE_OFFLINE"] = "1"
     os.environ["LANGSMITH_TRACING"] = "false"
-    for secret_key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "LANGSMITH_API_KEY"):
+    for secret_key in (
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "LANGSMITH_API_KEY",
+        "CONTEXT_TRACING_LANGSMITH",
+        "CONTEXT_TRACING_INTERNAL_OTLP_ENDPOINT",
+        "CONTEXT_TRACE_CONTENT",
+    ):
         os.environ.pop(secret_key, None)
 
 

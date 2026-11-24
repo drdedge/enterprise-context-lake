@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from context_core.compression import ensure_utc
+from context_core.model_boundary import external_model_allowed
 from context_core.models import (
     Claim,
     ConflictSet,
@@ -20,6 +21,7 @@ from context_core.models import (
 )
 from context_core.ports import GraphProjectionPort, PolicyPort, RetrievalPort, StorePort
 from context_core.receipts import build_receipt
+from context_core.tracing import langsmith_sdk_tracing_scope, traced
 
 from context_agents.backends import create_context_composite_backend, load_skill_include_tools
 
@@ -119,6 +121,24 @@ class ViewportGroundedAgent:
         principal: Principal,
     ) -> ViewportAgentResponse:
         """Assemble authorized viewport ground truth and generate a citation-grounded response."""
+        with traced(
+            "viewport_agent.answer",
+            principal=principal,
+            attributes={"context.llm_mode_requested": self._llm_mode},
+        ) as span:
+            response = await self._answer_untraced(message=message, viewport=viewport, principal=principal)
+            if span is not None:
+                span.set_attribute("context.llm_mode_used", response.llm_mode_used)
+                span.set_attribute("context.citation_count", len(response.citations))
+            return response
+
+    async def _answer_untraced(
+        self,
+        *,
+        message: str,
+        viewport: ViewportContext,
+        principal: Principal,
+    ) -> ViewportAgentResponse:
         tool_calls: list[AgentToolCallMetric] = []
         eff_as_of = ensure_utc(viewport.as_of)
         eff_rec = ensure_utc(viewport.recorded_as_of)
@@ -253,6 +273,11 @@ class ViewportGroundedAgent:
         answer_md: str | None = None
         used_mode: Literal["gemini", "deterministic"] = "deterministic"
 
+        # The Gemini API is an external service: only ever send it public-side material (ADR-009).
+        if effective_mode == "gemini" and not external_model_allowed([*entities, *claims, *conflicts]):
+            effective_mode = "deterministic"
+            tool_calls.append(AgentToolCallMetric(tool="llm.gemini.blocked_by_wall", duration_ms=0.0))
+
         if effective_mode == "gemini":
             t_llm = time.perf_counter()
             answer_md = await self._try_gemini_answer(
@@ -262,6 +287,7 @@ class ViewportGroundedAgent:
                 conflicts=conflicts,
                 impact_summary=impact_summary,
                 receipt=receipt,
+                principal=principal,
             )
             if answer_md:
                 used_mode = "gemini"
@@ -299,6 +325,7 @@ class ViewportGroundedAgent:
         conflicts: list[ConflictSet],
         impact_summary: str | None,
         receipt: ContextAssemblyReceipt,
+        principal: Principal | None = None,
     ) -> str | None:
         api_key = _resolve_gemini_api_key()
         if not api_key:
@@ -348,20 +375,22 @@ class ViewportGroundedAgent:
             if _is_langsmith_enabled():
                 config["run_name"] = f"viewport-agent-{receipt.receipt_id}"
 
-            resp = await llm.ainvoke(
-                [
-                    SystemMessage(
-                        content=(
-                            "You are the Enterprise Context Lake viewport analyst. Answer strictly from the "
-                            "provided caller-authorized context. Cite entities as [entity:<key>], claims as "
-                            "[claim:<id>], and conflicts as [conflict:<id>]. Never fabricate evidence URIs "
-                            "or bypass redacted evidence labels."
-                        )
-                    ),
-                    HumanMessage(content="\n".join(context_lines) + f"\n\nQuestion: {message}"),
-                ],
-                config=config,
-            )
+            # Private-side and above-the-wall context never reaches LangSmith via SDK callbacks.
+            with langsmith_sdk_tracing_scope(principal):
+                resp = await llm.ainvoke(
+                    [
+                        SystemMessage(
+                            content=(
+                                "You are the Enterprise Context Lake viewport analyst. Answer strictly from the "
+                                "provided caller-authorized context. Cite entities as [entity:<key>], claims as "
+                                "[claim:<id>], and conflicts as [conflict:<id>]. Never fabricate evidence URIs "
+                                "or bypass redacted evidence labels."
+                            )
+                        ),
+                        HumanMessage(content="\n".join(context_lines) + f"\n\nQuestion: {message}"),
+                    ],
+                    config=config,
+                )
             content = resp.content
             if isinstance(content, str) and content.strip():
                 return content.strip()

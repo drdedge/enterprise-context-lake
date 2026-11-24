@@ -685,3 +685,52 @@ export interface ChangeSetDTO {
   error: string | null;
   can_approve: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Entity pages (ADR-009)
+// ---------------------------------------------------------------------------
+
+export type WallSideName = "public_side" | "private_side" | "above_the_wall";
+
+export interface WikiCitationDTO {
+  n: number;
+  claim_id: string;
+  predicate: string;
+  source_system: string;
+  evidence_uri: string | null;
+  span_locator: string | null;
+  evidence_restricted: boolean;
+  epistemic_status: string;
+  valid_from: string | null;
+  recorded_at: string | null;
+}
+
+export interface WikiStatementDTO {
+  text: string;
+  cites: number[];
+  status: string | null;
+}
+
+export interface WikiSectionDTO {
+  id: string;
+  title: string;
+  kind: string;
+  text: string | null;
+  statements: WikiStatementDTO[];
+  mermaid: string | null;
+}
+
+export interface WikiPageDTO {
+  entity_id: string;
+  canonical_key: string;
+  title: string;
+  entity_type: string;
+  side: WallSideName;
+  template_id: string;
+  sections: WikiSectionDTO[];
+  citations: WikiCitationDTO[];
+  narrator: string;
+  fingerprint: string;
+  narration_cached: boolean;
+  generated_at: string;
+}

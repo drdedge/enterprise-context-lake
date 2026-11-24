@@ -61,7 +61,7 @@ flowchart TB
 
 ## Windows Quickstart
 
-Prerequisites: `.venv` (Python 3.15+), Node.js 24+ (for Vite frontend, Node `--permission` Code Mode sandbox, and Playwright E2E). All verification suites run 100% offline with zero API keys required.
+Prerequisites: `.venv` (Python 3.14+), Node.js 24+ (for Vite frontend, Node `--permission` Code Mode sandbox, and Playwright E2E). All verification suites run 100% offline with zero API keys required.
 
 ### 1. Start Local Dev Servers (FastAPI `:8000` + Vite `:5173`)
 
@@ -102,9 +102,17 @@ GEMINI_API_KEY=your-gemini-api-key
 # GOOGLE_API_KEY is also recognized
 GEMINI_MODEL=gemini-2.5-flash
 
-# Optional LangSmith tracing (tags spans with receipt_id, snapshot_version, as_of, policy_epoch)
+# Optional LangSmith export of OpenTelemetry traces (ADR-006).
+# Only public-side traces are sent; private-side, above-the-wall and unmarked traces never leave.
+# Prompt and response content is stripped unless CONTEXT_TRACE_CONTENT=true.
 LANGSMITH_API_KEY=your-langsmith-api-key
+LANGSMITH_PROJECT=enterprise-context-lake
+CONTEXT_TRACING_LANGSMITH=true
+# LangChain callback tracing of public-side model calls (inputs/outputs hidden by default)
 LANGSMITH_TRACING=true
+
+# Optional internal OTLP collector that receives every trace, unfiltered. Firm-run infrastructure only.
+CONTEXT_TRACING_INTERNAL_OTLP_ENDPOINT=http://otel-collector.internal:4318/v1/traces
 ```
 
 ## Runtime Adapter Swapping
@@ -126,6 +134,26 @@ Supported adapter values:
 - `retrieval`: `lexical_manifest` | `facet_graph`
 - `llm_mode`: `auto` | `gemini` | `deterministic`
 
+## LangSmith Context Hub Export & Import
+
+Public-side context can be exported to LangSmith Context Hub at a named release, and edits made there come back as proposals ([ADR-008](docs/adr/ADR-008-context-hub-export-import.md)). Private-side, above-the-wall and personal context never leaves the lake. Release managers only.
+
+- `GET /api/v1/context-hub/releases/{id}/plan`: what would be exported, and what is refused and why.
+- `POST /api/v1/context-hub/releases/{id}/export` with `{"dry_run": false}`: push the release and record the Context Hub commits on it. Exporting the first release is the one-off migration.
+- `POST /api/v1/context-hub/import` with `{"repo_handle": "context-lake-firm-all"}`: file the repo's knowledge edits as a proposed change set for a steward.
+
+By default this writes to a local folder emulation (`<runtime_dir>/context_hub`, or `CONTEXT_HUB_FOLDER`). Set `CONTEXT_HUB_BACKEND=langsmith` with `LANGSMITH_API_KEY` (and optionally `CONTEXT_HUB_OWNER`, `CONTEXT_HUB_REPO_PREFIX`) to use LangSmith.
+
+## Entity Pages
+
+Each entity has a wiki-style page built on request from the claims you may read, with every statement citing its source claim, a Mermaid relationship diagram, open conflicts and recent changes ([ADR-009](docs/adr/ADR-009-entity-pages.md)). Pages are cut by wall side: a public-side page never carries private-side material. Overviews and answers are written deterministically by default. Only public-side material ever goes to an external model.
+
+- `GET /api/v1/wiki/pages`: page list grouped by entity type, with each type's section outline.
+- `GET /api/v1/wiki/pages/{id_or_key}?format=markdown`: one page (also `side`, `as_of`, `channel`, `release`).
+- `POST /api/v1/wiki/ask` with `{"question": "..."}`: a cited answer built from the relevant pages.
+- `GET /api/v1/wiki/templates` and `PUT /api/v1/wiki/templates/{id}`: page templates per entity type, edited through change sets.
+- MCP: `read_wiki_structure`, `read_wiki_contents`, `ask_wiki_question`.
+
 ## Documentation
 
 ### Architecture Decision Records (ADRs)
@@ -134,8 +162,10 @@ Supported adapter values:
 - [ADR-003: Security, MNPI Walls, Split Claim/Evidence ACLs, Identity & Receipts](docs/adr/ADR-003-security-mnpi-acls-and-identity.md)
 - [ADR-004: Dual FastMCP Surface, Server-Side Code Mode & DeepAgents Harness](docs/adr/ADR-004-dual-mcp-codemode-and-agents.md)
 - [ADR-005: Minimalist Obsidian UX, Diagnostic Graph & Shared `/api/v1` Contract](docs/adr/ADR-005-minimalist-ux-and-diagnostic-graph.md)
+- [ADR-006: Wall-Aware OpenTelemetry Tracing & LangSmith Export](docs/adr/ADR-006-wall-aware-tracing-and-langsmith.md)
 - [ADR-007: Git-like Version Control for Context](docs/adr/ADR-007-context-version-control.md)
 - [ADR-008: Editable Taxonomy and Access Checks in the Query](docs/adr/ADR-008-editable-taxonomy-and-acl-sets.md)
+- [ADR-009: Entity Pages Built from Claims](docs/adr/ADR-009-entity-pages.md)
 
 ### Operational Runbooks
 - [01 — Claude Code MCP Integration](docs/runbooks/01-claude-code-mcp.md)

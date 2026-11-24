@@ -7,7 +7,7 @@ name = "enterprise-context-lake"
 version = "0.1.0"
 description = "Enterprise Context Lake — bitemporal institutional knowledge substrate, hexagonal adapters, dual FastMCP/Code Mode, DeepAgents harness, and diagnostic workspace"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.32.0",
@@ -31,12 +31,17 @@ dependencies = [
     "langgraph>=1.2.0",
     "langchain-google-genai>=4.5.0",
     "google-genai>=3.0.0",
+    "langsmith>=0.16.0",
+    "opentelemetry-api>=1.30.0",
+    "opentelemetry-sdk>=1.30.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.30.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
+    "hypothesis>=6.120.0",
 ]
 
 [tool.setuptools]

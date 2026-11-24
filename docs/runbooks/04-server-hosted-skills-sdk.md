@@ -6,7 +6,7 @@ Run deterministic, sub-millisecond institutional lookups inside server-hosted sk
 
 ## 1. Snapshot Partitioning & Compilation
 
-Snapshots are physically partitioned by `(acl_tier, wall_side)` (e.g. `firm-all__public_side`, `private-credit-deal-team__private_side`) and compiled asynchronously off the event loop (`asyncio.to_thread`) using Python 3.15 stdlib `compression.zstd`:
+Snapshots are physically partitioned by `(acl_tier, wall_side)` (e.g. `firm-all__public_side`, `private-credit-deal-team__private_side`) and compiled asynchronously off the event loop (`asyncio.to_thread`) using Python 3.14+ stdlib `compression.zstd`:
 
 - Zero unauthorized rows, zero private memories, zero `unverified_observation` rows, and zero restricted `evidence_uri` / `excerpt` strings exist anywhere in a partition's binary `.sqlite.zst` file.
 - Manifest updates write `manifest.json.tmp.<pid>.<tid>` and call `os.replace()` with a Windows NTFS sharing-violation retry loop.
@@ -73,7 +73,7 @@ client.close()
 
 ## 3. External Observability (LangSmith / External Arize Phoenix)
 
-This repository intentionally omits bundled Arize Phoenix exporters. Instead, every SDK lookup and API/MCP read emits an immutable, SHA-256-sealed `ContextAssemblyReceipt`. Log these exact attributes on external OpenTelemetry, LangSmith, or Arize Phoenix spans for bit-for-bit reproducible audit trails:
+Every SDK lookup and API/MCP read emits an immutable, SHA-256-sealed `ContextAssemblyReceipt`. When a span is recording, `build_receipt` writes these attributes onto it automatically, and mirrors each as `langsmith.metadata.context_<name>` so LangSmith shows them as filterable run metadata. Tracing, routing and masking are described in [ADR-006](../adr/ADR-006-wall-aware-tracing-and-langsmith.md): only public-side traces are exported to LangSmith, and private-side traces stay on the internal collector. Receipt attributes:
 
 - `context.receipt_id` (`receipt.receipt_id`)
 - `context.receipt_sha256` (`receipt.receipt_sha256`)

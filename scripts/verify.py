@@ -1,4 +1,4 @@
-"""Master offline verification runner executing all 7 external oracles.
+"""Master offline verification runner executing all 8 external oracles.
 
 Runs 100% offline with zero external LLM/cloud API keys required:
   - Pre-check: fixtures/validate_fixtures.py + LF line-ending check
@@ -9,6 +9,8 @@ Runs 100% offline with zero external LLM/cloud API keys required:
   - Oracle 5: tests/test_knowledge_factory.py
   - Oracle 6: evals/eval_mcp_vs_codemode.py
   - Oracle 7: tests/e2e/test_ui_playwright.spec.ts (live FastAPI + Vite + Chromium)
+  - Oracle 8: tests/test_tracing_wall_routing.py (runs with Oracles 1-5)
+  - Oracle 10: tests/test_wiki_pages.py (entity pages, ADR-009)
 
 Saves machine-readable summary to data/local/verify_summary.json and prints a
 clean Markdown verification table to stdout.
@@ -54,11 +56,14 @@ REQUIRED_SCREENSHOTS = [
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 PYTEST_ORACLES: list[tuple[int, str, str]] = [
+    (9, "Oracle 9: LangSmith Context Hub Export & Import", "tests/test_context_hub.py"),
+    (10, "Oracle 10: Entity Pages, Citations & Model Boundary", "tests/test_wiki_pages.py"),
     (1, "Oracle 1: Bitemporal Replay & SDK Isolation", "tests/test_bitemporal_replay.py"),
     (2, "Oracle 2: Security Red-Team (9 Surfaces)", "tests/test_security_redteam.py"),
     (3, "Oracle 3: Hexagonal Adapter Conformance", "tests/test_adapter_conformance.py"),
     (4, "Oracle 4: Institutional Domain Workflows", "tests/test_domain_workflows.py"),
     (5, "Oracle 5: Knowledge Factory & DeepAgents", "tests/test_knowledge_factory.py"),
+    (8, "Oracle 8: Wall-Aware Tracing & LangSmith Export", "tests/test_tracing_wall_routing.py"),
 ]
 
 
@@ -413,7 +418,7 @@ def render_markdown_summary(summary: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run all 7 Enterprise Context Lake verification oracles.")
+    parser = argparse.ArgumentParser(description="Run all 8 Enterprise Context Lake verification oracles.")
     parser.add_argument(
         "--oracles",
         default="1,2,3,4,5,6,7",

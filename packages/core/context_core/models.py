@@ -148,7 +148,7 @@ IngestionChannel = Literal["automated_feed", "manual_upload", "human_authored", 
 
 TopicKind = Literal["curated_core", "emergent_candidate", "merged_alias"]
 TopicStatus = Literal["active", "proposed", "merged", "archived"]
-KnowledgeKind = Literal["domain_knowledge", "skill_procedure", "data_access_guidance"]
+KnowledgeKind = Literal["domain_knowledge", "skill_procedure", "data_access_guidance", "page_template"]
 
 GraphLens = Literal[
     "topic",

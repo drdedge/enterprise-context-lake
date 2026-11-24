@@ -328,3 +328,28 @@ async def test_api_rejects_a_loop(api_client: Any) -> None:
         "/api/v1/vocabularies/entity_type/terms/party", json={"parent_key": "issuer"}, headers=mock_headers(STEWARD_ID)
     )
     assert r.status_code in (400, 422), r.text
+
+
+@pytest.mark.asyncio
+async def test_wiki_templates_follow_the_entity_type_tree(api_client: Any) -> None:
+    """A page template for a broad type applies to every narrower type (ADR-008 + ADR-009)."""
+    body = {
+        "name": "Product page",
+        "entity_types": ["product"],
+        "sections": [{"id": "overview", "title": "Summary", "kind": "overview"}],
+        "reason": "One layout for every product",
+    }
+    r = await api_client.put("/api/v1/wiki/templates/product", json=body, headers=mock_headers(STEWARD_ID))
+    assert r.status_code == 201, r.text
+
+    # legal_vehicle sits under product in the seeded tree, so its page uses the product template
+    page = (await api_client.get("/api/v1/wiki/pages/veh:alpha-credit-offshore-lp", headers=mock_headers(ANALYST_ID))).json()["page"]
+    assert page["template_id"] == "product"
+
+    listed = (await api_client.get("/api/v1/wiki/pages", headers=mock_headers(ANALYST_ID))).json()
+    groups = {g["entity_type"]: g for g in listed["groups"]}
+    assert groups["legal_vehicle"]["parent_type"] == "product"
+    assert groups["legal_vehicle"]["template_id"] == "product"
+    assert groups["issuer"]["parent_type"] == "organisation"
+    # issuer still has its own, more specific template
+    assert groups["issuer"]["template_id"] == "issuer"
