@@ -87,6 +87,20 @@ jobs:
           PYTHONUTF8: "1"
         run: python scripts/verify.py
 
+      # Any test file that verify.py does not list as an oracle (for example tests/test_scale_and_cache.py),
+      # so new suites run in CI without having to edit verify.py first.
+      - name: Run remaining pytest suites
+        env:
+          PYTHONUTF8: "1"
+        run: >
+          python -m pytest -q tests
+          --ignore=tests/e2e
+          --ignore=tests/test_bitemporal_replay.py
+          --ignore=tests/test_security_redteam.py
+          --ignore=tests/test_adapter_conformance.py
+          --ignore=tests/test_domain_workflows.py
+          --ignore=tests/test_knowledge_factory.py
+
       - name: Upload logs and Playwright results
         if: failure()
         uses: actions/upload-artifact@v4
