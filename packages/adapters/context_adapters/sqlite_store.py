@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
+import weakref
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -27,7 +30,9 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from sqlalchemy.pool import AsyncAdaptedQueuePool, StaticPool
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DisconnectionError
+from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool, StaticPool
 
 from context_core.bitemporal import (
     claim_collision_key,
@@ -415,33 +420,19 @@ class SqliteBitemporalStore:
         self._is_sqlite = self.database_url.startswith("sqlite")
         self._is_memory = ":memory:" in self.database_url
 
-        engine_kwargs: dict[str, Any] = {"future": True}
-        if self._is_sqlite:
-            if self._is_memory:
-                engine_kwargs["poolclass"] = StaticPool
-                engine_kwargs["connect_args"] = {"check_same_thread": False}
-            else:
-                # A small connection pool: NullPool reopened the database file and started a new
-                # aiosqlite thread for every query, which dominated request latency. close() disposes
-                # the pool, so every pooled handle is released before teardown (no WinError 32 locks).
-                engine_kwargs["poolclass"] = AsyncAdaptedQueuePool
-                engine_kwargs["pool_size"] = 5
-                engine_kwargs["max_overflow"] = 10
-                engine_kwargs["connect_args"] = {"timeout": 30}
-
-        self._engine: AsyncEngine = create_async_engine(self.database_url, **engine_kwargs)
-        if self._is_sqlite:
-
-            @event.listens_for(self._engine.sync_engine, "connect")
-            def _configure_sqlite(dbapi_conn: Any, _record: Any) -> None:
-                cur = dbapi_conn.cursor()
-                try:
-                    cur.execute("PRAGMA busy_timeout = 30000")
-                    cur.execute("PRAGMA foreign_keys = ON")
-                    if not self._is_memory:
-                        cur.execute("PRAGMA synchronous = NORMAL")
-                finally:
-                    cur.close()
+        self._file_path: str | None = None
+        if self._is_sqlite and not self._is_memory:
+            self._file_path = make_url(self.database_url).database
+        # The pooled engine is bound to the event loop that first uses it (aiosqlite connections and
+        # the pool queue are loop-bound). Calls from any other running loop (e.g. the sync bridge in
+        # context_agents that does asyncio.run in a worker thread) get their own NullPool engine,
+        # which is how every call behaved before pooling.
+        self._pooled_engine: AsyncEngine | None = None
+        self._pooled_loop: asyncio.AbstractEventLoop | None = None
+        self._other_engines: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, AsyncEngine] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._fallback_engine: AsyncEngine | None = None
 
         self._initialized = False
         self._fts_enabled = False
@@ -461,15 +452,97 @@ class SqliteBitemporalStore:
         self._foreign_writes = 0
         self._own_data_version: int | None = None
         self._version_conn: sqlite3.Connection | None = None
+        self._version_identity: tuple[int, int] | None = None
+        self._version_lock = threading.Lock()
 
-        @event.listens_for(self._engine.sync_engine, "before_cursor_execute")
-        def _track_writes(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
-            m = _WRITE_SQL.match(statement)
-            if m:
-                name = m.group(1).lower()
-                self._table_writes[name] = self._table_writes.get(name, 0) + 1
-            elif not _READ_SQL.match(statement):
-                self._any_writes += 1  # DDL or anything unrecognised: invalidate everything
+    def _make_engine(self, *, pooled: bool) -> AsyncEngine:
+        engine_kwargs: dict[str, Any] = {"future": True}
+        if self._is_sqlite:
+            if self._is_memory:
+                engine_kwargs["poolclass"] = StaticPool
+                engine_kwargs["connect_args"] = {"check_same_thread": False}
+            elif pooled:
+                # A small pool: NullPool reopened the database file and started a new aiosqlite
+                # thread for every query, which dominated request latency. close() disposes it, so
+                # no handle outlives the store (no WinError 32 file locks on Windows).
+                engine_kwargs["poolclass"] = AsyncAdaptedQueuePool
+                engine_kwargs["pool_size"] = 5
+                engine_kwargs["max_overflow"] = 10
+                engine_kwargs["connect_args"] = {"timeout": 30}
+            else:
+                engine_kwargs["poolclass"] = NullPool
+                engine_kwargs["connect_args"] = {"timeout": 30}
+        engine = create_async_engine(self.database_url, **engine_kwargs)
+        if self._is_sqlite:
+            sync_engine = engine.sync_engine
+
+            @event.listens_for(sync_engine, "connect")
+            def _configure_sqlite(dbapi_conn: Any, record: Any) -> None:
+                cur = dbapi_conn.cursor()
+                try:
+                    cur.execute("PRAGMA busy_timeout = 30000")
+                    cur.execute("PRAGMA foreign_keys = ON")
+                    if not self._is_memory:
+                        cur.execute("PRAGMA synchronous = NORMAL")
+                finally:
+                    cur.close()
+                record.info["file_identity"] = self._file_identity()
+
+            @event.listens_for(sync_engine, "checkout")
+            def _check_same_file(_dbapi_conn: Any, record: Any, _proxy: Any) -> None:
+                # A pooled handle keeps reading the file it opened. If the database file has been
+                # replaced or deleted since (restore from backup, reseed), drop the handle and
+                # reconnect, as NullPool effectively did.
+                opened = record.info.get("file_identity")
+                if opened is not None and opened != self._file_identity():
+                    raise DisconnectionError("database file replaced since this connection was opened")
+
+            @event.listens_for(sync_engine, "before_cursor_execute")
+            def _track_writes(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+                m = _WRITE_SQL.match(statement)
+                if m:
+                    name = m.group(1).lower()
+                    self._table_writes[name] = self._table_writes.get(name, 0) + 1
+                elif not _READ_SQL.match(statement):
+                    self._any_writes += 1  # DDL or anything unrecognised: invalidate everything
+
+        return engine
+
+    def _file_identity(self) -> tuple[int, int] | None:
+        if self._file_path is None:
+            return None
+        try:
+            st = os.stat(self._file_path)
+        except OSError:
+            return None
+        return (st.st_dev, st.st_ino)
+
+    @property
+    def _engine(self) -> AsyncEngine:
+        if self._is_memory:
+            # One shared in-memory database: a single StaticPool engine for every caller, as before
+            if self._fallback_engine is None:
+                self._fallback_engine = self._make_engine(pooled=False)
+            return self._fallback_engine
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            if self._fallback_engine is None:
+                self._fallback_engine = self._make_engine(pooled=False)
+            return self._fallback_engine
+        if self._pooled_engine is None or self._pooled_loop is None or self._pooled_loop.is_closed():
+            # First loop to use the store (or the previous owner loop has gone): it owns the pool
+            self._pooled_engine = self._make_engine(pooled=True)
+            self._pooled_loop = loop
+        if loop is self._pooled_loop:
+            return self._pooled_engine
+        engine = self._other_engines.get(loop)
+        if engine is None:
+            engine = self._make_engine(pooled=False)
+            self._other_engines[loop] = engine
+        return engine
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -509,21 +582,56 @@ class SqliteBitemporalStore:
 
     async def close(self) -> None:
         self._scan_cache.clear()
-        if self._version_conn is not None:
-            try:
-                self._version_conn.close()
-            finally:
-                self._version_conn = None
-        await self._engine.dispose()
+        with self._version_lock:
+            if self._version_conn is not None:
+                try:
+                    self._version_conn.close()
+                finally:
+                    self._version_conn = None
+        try:
+            current: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if self._pooled_engine is not None:
+            if current is not None and current is self._pooled_loop:
+                await self._pooled_engine.dispose()
+            else:
+                # Owned by another (possibly closed) loop: release the handles without awaiting
+                await self._pooled_engine.dispose(close=False)
+            self._pooled_engine = None
+            self._pooled_loop = None
+        for engine in list(self._other_engines.values()):
+            await engine.dispose(close=False)
+        self._other_engines.clear()
+        if self._fallback_engine is not None:
+            await self._fallback_engine.dispose()
+            self._fallback_engine = None
         self._initialized = False
 
     def _data_version(self) -> int:
-        """SQLite's per-connection change counter for commits made by other connections."""
-        if self._is_memory or not self._is_sqlite:
+        """SQLite's per-connection change counter for commits made by other connections.
+
+        Runs on the event loop, so it never waits for a lock (timeout=0): if the database is busy it
+        raises sqlite3.OperationalError and the caller treats that as a cache miss. If the database
+        file was replaced, the watcher reopens it and the change counts as a foreign write.
+        """
+        if self._is_memory or not self._is_sqlite or self._file_path is None:
             return 0
+        # The watcher connection is shared by every thread/event loop using this store
+        with self._version_lock:
+            return self._data_version_locked()
+
+    def _data_version_locked(self) -> int:
+        identity = self._file_identity()
+        if self._version_conn is not None and identity != self._version_identity:
+            self._version_conn.close()
+            self._version_conn = None
+            self._foreign_writes += 1
         if self._version_conn is None:
-            path = self.database_url.split("///", 1)[1]
-            self._version_conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
+            if identity is None:
+                raise sqlite3.OperationalError("database file missing")
+            self._version_conn = sqlite3.connect(self._file_path, check_same_thread=False, timeout=0)
+            self._version_identity = identity
         return int(self._version_conn.execute("PRAGMA data_version").fetchone()[0])
 
     def _after_own_write(self) -> None:
@@ -2694,17 +2802,23 @@ class SqliteBitemporalStore:
                 if self._fts_enabled:
                     await conn.execute(text("DELETE FROM fts_documents"))
 
-                # Batched import: rows are collected per table (last write per primary key wins, as with
-                # the per-row delete+insert helpers) and written with executemany, in first-use table
-                # order so foreign keys are satisfied. One round trip per chunk instead of per row.
+                # Batched import: rows are collected per table and written with executemany in the
+                # original table order, one round trip per 1,000 rows instead of one per row.
+                # Entities, claims, conflict sets and topics were written with delete+insert helpers,
+                # so a repeated id keeps the last record. Every other table was a plain INSERT, so a
+                # repeated id still fails the whole import with IntegrityError (rows are kept apart).
+                last_wins = {t_entities, t_claims, t_conflict_sets, t_conflict_set_members, t_topics}
                 pending: dict[Any, dict[tuple[Any, ...], dict[str, Any]]] = {}
                 fts_rows: dict[tuple[str, str], dict[str, Any]] = {}
 
                 def _add(table: Any, **row: Any) -> None:
                     rows = pending.setdefault(table, {})
-                    pk = tuple(row.get(col.name) for col in table.primary_key.columns) or (len(rows),)
-                    rows.pop(pk, None)
-                    rows[pk] = row
+                    pk = tuple(row.get(col.name) for col in table.primary_key.columns)
+                    if table in last_wins:
+                        rows.pop(pk, None)
+                        rows[pk] = row
+                    else:
+                        rows[(len(rows), *pk)] = row
 
                 def _fts(doc_type: str, doc_id: str, title: str, body: str) -> None:
                     fts_rows.pop((doc_type, doc_id), None)
