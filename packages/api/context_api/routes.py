@@ -367,7 +367,7 @@ async def get_stream(
         principal=principal,
         entity_types=[entity_type] if entity_type else None,
         topic_slug=topic,
-        limit=500,
+        limit=None,
         offset=0,
     )
     claims = await store.query_claims(
@@ -508,7 +508,7 @@ async def list_entities(
         principal=principal,
         entity_types=[entity_type] if entity_type else None,
         topic_slug=topic,
-        limit=500,
+        limit=None,
         offset=0,
     )
     claims = await store.query_claims(
@@ -848,7 +848,7 @@ async def list_topics(
 
     topics = await store.list_topics(principal=principal, include_archived=include_archived)
     attachments = await store.list_topic_attachments(principal=principal)
-    auth_eids = {e.entity_id for e in await store.list_entities(principal=principal, limit=1000)}
+    auth_eids = {e.entity_id for e in await store.list_entities(principal=principal, limit=None)}
     auth_cids = {
         c.claim_id
         for c in await store.query_claims(
