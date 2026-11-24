@@ -15,13 +15,11 @@ import yaml
 from pypdf import PdfReader
 
 from context_core.compression import (
-    atomic_write_bytes,
     ensure_utc,
     format_utc,
     lf_sha256_bytes,
     normalize_lf_bytes,
     normalize_lf_text,
-    to_posix_path,
     utc_now,
 )
 from context_core.exceptions import AuthorizationError, NotFoundError, ValidationError
@@ -36,6 +34,7 @@ from context_core.models import (
 )
 from context_core.policy import wall_allows
 from context_core.ports import PolicyPort, StorePort
+from context_adapters.blob_store import BlobStore, LocalBlobStore, get_json, put_json
 
 TEXT_MEDIA_SUFFIXES = frozenset({".csv", ".md", ".markdown", ".txt", ".json", ".yaml", ".yml"})
 SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._-]+")
@@ -62,14 +61,28 @@ class UploadService:
     - Enforces decoupled `evidence_acl_groups` and `wall_side` on source listing & retrieval.
     """
 
-    def __init__(self, *, storage_dir: Path, repo_root: Path | None = None) -> None:
+    def __init__(self, *, storage_dir: Path, repo_root: Path | None = None, blobs: BlobStore | None = None) -> None:
         self._storage_dir = storage_dir
-        self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._repo_root = repo_root or Path(__file__).resolve().parents[3]
+        # Uploaded files (and, on S3, the upload records) go to the blob store: a local folder by
+        # default, S3 with SSE-KMS in production (ADR-010)
+        self._blobs: BlobStore = blobs if blobs is not None else LocalBlobStore(storage_dir, repo_root=self._repo_root)
+        self._persist_records = not isinstance(self._blobs, LocalBlobStore)
         self._records: dict[str, dict[str, Any]] = {}
+        self._loaded = not self._persist_records
 
     def clear(self) -> None:
         self._records.clear()
+
+    def _load_records(self) -> None:
+        """Read upload records written by earlier runs (S3 only; local records live in memory)."""
+        if self._loaded:
+            return
+        for key in self._blobs.list_keys("records"):
+            if key.endswith(".json"):
+                rec = get_json(self._blobs, key)
+                self._records.setdefault(rec["upload_id"], rec)
+        self._loaded = True
 
     async def ingest_upload(
         self,
@@ -104,13 +117,6 @@ class UploadService:
         content_sha256 = lf_sha256_bytes(raw_bytes, is_text=is_text)
 
         upload_id = f"upl-{uuid.uuid4().hex[:12]}"
-        artifact_path = self._storage_dir / f"{upload_id}_{safe_name}"
-        atomic_write_bytes(artifact_path, stored_bytes)
-        try:
-            rel_uri = to_posix_path(artifact_path.relative_to(self._repo_root))
-        except ValueError:
-            rel_uri = f"uploads/{upload_id}_{safe_name}"
-
         media_type = content_type or (
             "application/pdf"
             if suffix == ".pdf"
@@ -122,6 +128,7 @@ class UploadService:
             if suffix == ".json"
             else "text/plain"
         )
+        rel_uri = self._blobs.put(f"{upload_id}_{safe_name}", stored_bytes, content_type=media_type)
 
         read_groups = (
             ["firm-all"]
@@ -232,6 +239,8 @@ class UploadService:
             "epistemic_status": "unverified_observation",
         }
         self._records[upload_id] = record
+        if self._persist_records:
+            put_json(self._blobs, f"records/{upload_id}.json", record)
 
         return UploadIngestResult(
             upload_id=upload_id,
@@ -461,6 +470,7 @@ class UploadService:
         return out
 
     def list_sources(self, *, principal: Principal) -> list[dict[str, Any]]:
+        self._load_records()
         out: list[dict[str, Any]] = []
         for rec in self._records.values():
             san = self._sanitize_source_for_principal(rec, principal)
@@ -470,6 +480,7 @@ class UploadService:
         return out
 
     def get_source(self, upload_id: str, *, principal: Principal) -> dict[str, Any] | None:
+        self._load_records()
         rec = self._records.get(upload_id)
         if rec is None:
             return None

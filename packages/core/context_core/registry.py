@@ -9,7 +9,7 @@ from context_core.graph import GraphProjectionService
 from context_core.policy import PolicyEngine
 from context_core.ports import RetrievalPort, SnapshotPort, StorePort
 
-StoreName = Literal["sqlite_bitemporal", "okf_markdown_vault"]
+StoreName = Literal["sqlite_bitemporal", "okf_markdown_vault", "sqlserver_bitemporal"]
 RetrievalName = Literal["lexical_manifest", "facet_graph"]
 LlmMode = Literal["auto", "gemini", "deterministic"]
 

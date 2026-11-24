@@ -42,6 +42,15 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
     "hypothesis>=6.120.0",
+    # In-process stand-ins for AWS KMS and S3 in the storage tests (ADR-010)
+    "moto[kms,s3]>=5.0.0",
+    "boto3>=1.35.0",
+]
+# Production storage (ADR-010): SQL Server through Microsoft ODBC Driver 18, AWS KMS and S3.
+sqlserver = [
+    "aioodbc>=0.5.0",
+    "pyodbc>=5.1.0",
+    "boto3>=1.35.0",
 ]
 
 [tool.setuptools]

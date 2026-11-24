@@ -12,6 +12,7 @@ from cachetools import TTLCache
 from dotenv import load_dotenv
 
 from context_adapters import create_default_registry
+from context_adapters.blob_store import blob_store_from_env
 from context_core.models import ActorMode, ChannelMode
 from context_core.policy import PolicyEngine, PrincipalDirectory
 from context_core.registry import AdapterRegistry, LlmMode
@@ -124,7 +125,7 @@ async def create_runtime_context(
     db_path: Path | str | None = None,
     runtime_dir: Path | str | None = None,
     fixtures_dir: Path | str | None = None,
-    active_store: Literal["sqlite_bitemporal", "okf_markdown_vault"] = "sqlite_bitemporal",
+    active_store: Literal["sqlite_bitemporal", "okf_markdown_vault", "sqlserver_bitemporal"] | None = None,
     active_retrieval: Literal["lexical_manifest", "facet_graph"] = "lexical_manifest",
     llm_mode: LlmMode = "auto",
     auth_mode: Literal["mock", "entra_jwt"] | None = None,
@@ -162,7 +163,7 @@ def build_runtime_context_sync(
     db_path: Path | str | None = None,
     runtime_dir: Path | str | None = None,
     fixtures_dir: Path | str | None = None,
-    active_store: Literal["sqlite_bitemporal", "okf_markdown_vault"] = "sqlite_bitemporal",
+    active_store: Literal["sqlite_bitemporal", "okf_markdown_vault", "sqlserver_bitemporal"] | None = None,
     active_retrieval: Literal["lexical_manifest", "facet_graph"] = "lexical_manifest",
     llm_mode: LlmMode = "auto",
     auth_mode: Literal["mock", "entra_jwt"] | None = None,
@@ -173,7 +174,18 @@ def build_runtime_context_sync(
     compile_initial_snapshots: bool = True,
     ephemeral: bool = False,
 ) -> AppRuntimeContext:
-    """Synchronously construct AppRuntimeContext (initialized inside FastAPI lifespan)."""
+    """Synchronously construct AppRuntimeContext (initialized inside FastAPI lifespan).
+
+    ``active_store`` defaults to ``LAKE_STORE``, else ``sqlserver_bitemporal`` when
+    ``LAKE_SQLSERVER_URL`` is set, else ``sqlite_bitemporal``. Demo fixtures are never seeded into
+    SQL Server unless ``LAKE_SEED_FIXTURES=1`` (and the store refuses to overwrite data it holds).
+    """
+    if active_store is None:
+        active_store = os.environ.get("LAKE_STORE", "").strip() or (  # type: ignore[assignment]
+            "sqlserver_bitemporal" if os.environ.get("LAKE_SQLSERVER_URL", "").strip() else "sqlite_bitemporal"
+        )
+    if active_store == "sqlserver_bitemporal" and os.environ.get("LAKE_SEED_FIXTURES", "").lower() not in ("1", "true", "yes"):
+        seed_fixtures = False
     root = Path(repo_root).resolve() if repo_root else DEFAULT_REPO_ROOT
     temp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
 
@@ -219,7 +231,9 @@ def build_runtime_context_sync(
         default_actor_mode=default_actor_mode,
         default_channel_mode=default_channel_mode,
     )
-    uploads = UploadService(storage_dir=uploads_dir, repo_root=root)
+    uploads = UploadService(
+        storage_dir=uploads_dir, repo_root=root, blobs=blob_store_from_env(uploads_dir, repo_root=root)
+    )
 
     default_principal = None
     if default_user_id and os.environ.get("ENVIRONMENT", "").lower() != "production":

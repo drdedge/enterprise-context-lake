@@ -6,6 +6,8 @@ set (SQL Server row-level security is not assumed; see ADR-007).
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import asyncio
 import uuid
 from typing import Any, Callable
@@ -572,32 +574,41 @@ class ChangeSetService:
                 cs.error = "Changed since proposed: " + "; ".join(stale)
                 self.ledger.save_change_set(cs)
                 raise OptimisticConcurrencyError(cs.error)
+            # Stores with a unit of work (SQL Server) apply every item, and every history row, in
+            # one transaction: the change lands in full or not at all. Other stores apply item by
+            # item, and items applied before a failure stay applied (see ADR-007 and ADR-010).
+            unit_of_work = getattr(self.store, "unit_of_work", None)
+            atomic = unit_of_work is not None
             token = active_change.set(ActiveChange(cs.change_id))
             try:
-                for item in cs.items:
-                    await self._apply_item(item, author=author, merger=merger)
-                    if item.record_id:
-                        latest = self.ledger.latest_version(item.record_type, item.record_id)
-                        item.applied_version = latest.version_no if latest and latest.change_id == cs.change_id else None
+                async with (unit_of_work() if atomic else nullcontext()):
+                    for item in cs.items:
+                        await self._apply_item(item, author=author, merger=merger)
+                        if item.record_id:
+                            latest = self.ledger.latest_version(item.record_type, item.record_id)
+                            item.applied_version = latest.version_no if latest and latest.change_id == cs.change_id else None
+                    merged = cs.model_copy(deep=True)
+                    merged.status = "merged"
+                    merged.merged_at = ts()
+                    merged.merged_by = merger.user_id
+                    merged.decided_at = merged.decided_at or merged.merged_at
+                    self.ledger.save_change_set(merged)
+                    if cs.reverts_change_id:
+                        original = self.ledger.get_change_set(cs.reverts_change_id)
+                        if original is not None:
+                            original.reverted_by_change_id = cs.change_id
+                            self.ledger.save_change_set(original)
             except Exception as exc:
-                # Items applied before the failure stay applied and are visible in history under this
-                # change set (prototype: not one transaction across stores; see ADR-007).
+                if atomic:
+                    for item in cs.items:
+                        item.applied_version = None  # rolled back: nothing was applied
                 cs.status = "failed"
                 cs.error = f"{type(exc).__name__}: {exc}"
                 self.ledger.save_change_set(cs)
                 raise
             finally:
                 active_change.reset(token)
-            cs.status = "merged"
-            cs.merged_at = ts()
-            cs.merged_by = merger.user_id
-            cs.decided_at = cs.decided_at or cs.merged_at
-            self.ledger.save_change_set(cs)
-            if cs.reverts_change_id:
-                original = self.ledger.get_change_set(cs.reverts_change_id)
-                if original is not None:
-                    original.reverted_by_change_id = cs.change_id
-                    self.ledger.save_change_set(original)
+            cs = merged
         return cs
 
     # ------------------------------------------------------------------

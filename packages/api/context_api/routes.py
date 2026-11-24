@@ -139,7 +139,7 @@ def _normalize_direction(direction: str) -> str:
 
 
 class AdapterSwapBody(BaseModel):
-    store: Literal["sqlite_bitemporal", "okf_markdown_vault"] | None = None
+    store: Literal["sqlite_bitemporal", "okf_markdown_vault", "sqlserver_bitemporal"] | None = None
     retrieval: Literal["lexical_manifest", "facet_graph"] | None = None
     llm_mode: Literal["auto", "gemini", "deterministic"] | None = None
 

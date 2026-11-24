@@ -11,6 +11,7 @@ Every other attribute passes straight through to the wrapped store.
 from __future__ import annotations
 
 import uuid
+from contextlib import nullcontext
 from contextvars import ContextVar
 from typing import Any, Awaitable, Callable
 
@@ -248,15 +249,26 @@ class VersionedStore:
             epistemic_status=status, force_supersede=force_supersede, is_mandatory=is_mandatory,
         )
 
+    def _atomic(self) -> Any:
+        """One transaction for the write and its history row, where the store supports it.
+
+        SQL Server: the store's unit of work (the ledger's rows commit with the record). Stores
+        without one (SQLite, the Markdown vault) write as before. Approval gates run before this,
+        so a proposal filed by a gate is never rolled back with the write it stopped.
+        """
+        uow = getattr(self._inner, "unit_of_work", None)
+        return uow() if uow is not None else nullcontext()
+
     # ------------------------------------------------------------------
     # Wrapped writes
     # ------------------------------------------------------------------
 
     async def upsert_entity(self, entity: Entity) -> Entity:
-        result = await self._inner.upsert_entity(entity)
-        self._record_entity(result)
-        self._record_new_terms()
-        return result
+        async with self._atomic():
+            result = await self._inner.upsert_entity(entity)
+            self._record_entity(result)
+            self._record_new_terms()
+            return result
 
     async def upsert_vocab_term(self, term: VocabTerm) -> VocabTerm:
         actor = current_actor.get()
@@ -267,34 +279,40 @@ class VersionedStore:
                 items=[ChangeItemInput(record_type="vocab_term", op="upsert", record_id=term.term_id, payload=term.model_dump(mode="json"))],
                 principal=actor,
             )
-        result = await self._inner.upsert_vocab_term(term)
-        self._record_vocab_term(result, author=actor)
-        return result
+        async with self._atomic():
+            result = await self._inner.upsert_vocab_term(term)
+            self._record_vocab_term(result, author=actor)
+            return result
 
     async def upsert_identifier(self, ident: Any) -> Any:
-        result = await self._inner.upsert_identifier(ident)
-        self._record_new_terms()
-        return result
+        async with self._atomic():
+            result = await self._inner.upsert_identifier(ident)
+            self._record_new_terms()
+            return result
 
     async def add_lineage_event(self, event: Any) -> Any:
-        result = await self._inner.add_lineage_event(event)
-        self._record_new_terms()
-        return result
+        async with self._atomic():
+            result = await self._inner.add_lineage_event(event)
+            self._record_new_terms()
+            return result
 
     async def upsert_position(self, pos: Any) -> Any:
-        result = await self._inner.upsert_position(pos)
-        self._record_new_terms()
-        return result
+        async with self._atomic():
+            result = await self._inner.upsert_position(pos)
+            self._record_new_terms()
+            return result
 
     async def upsert_coverage(self, cov: Any) -> Any:
-        result = await self._inner.upsert_coverage(cov)
-        self._record_new_terms()
-        return result
+        async with self._atomic():
+            result = await self._inner.upsert_coverage(cov)
+            self._record_new_terms()
+            return result
 
     async def upsert_knowledge_item(self, item: KnowledgeItem) -> KnowledgeItem:
-        result = await self._inner.upsert_knowledge_item(item)
-        self._record_item(result)
-        return result
+        async with self._atomic():
+            result = await self._inner.upsert_knowledge_item(item)
+            self._record_item(result)
+            return result
 
     async def upsert_topic(self, topic: Topic) -> Topic:
         actor = current_actor.get()
@@ -305,9 +323,10 @@ class VersionedStore:
                 items=[ChangeItemInput(record_type="topic", op="upsert", record_id=topic.topic_id, payload=topic.model_dump(mode="json"))],
                 principal=actor,
             )
-        result = await self._inner.upsert_topic(topic)
-        self._record_topic(result)
-        return result
+        async with self._atomic():
+            result = await self._inner.upsert_topic(topic)
+            self._record_topic(result)
+            return result
 
     async def update_topic(self, topic_id: str, patch: TopicPatchInput, *, principal: Principal) -> Topic:
         if self._gated():
@@ -317,15 +336,17 @@ class VersionedStore:
                 items=[ChangeItemInput(record_type="topic", op="patch", record_id=topic_id, payload=patch.model_dump(mode="json", exclude_none=True))],
                 principal=principal,
             )
-        result = await self._inner.update_topic(topic_id, patch, principal=principal)
-        self._record_topic(result, author=principal)
-        return result
+        async with self._atomic():
+            result = await self._inner.update_topic(topic_id, patch, principal=principal)
+            self._record_topic(result, author=principal)
+            return result
 
     async def seed_claim_raw(self, claim: Claim) -> Claim:
-        result = await self._inner.seed_claim_raw(claim)
-        self._record_claim(result, op="baseline")
-        self._record_new_terms()
-        return result
+        async with self._atomic():
+            result = await self._inner.seed_claim_raw(claim)
+            self._record_claim(result, op="baseline")
+            self._record_new_terms()
+            return result
 
     async def write_claim(self, payload: ClaimCreateInput, *, principal: Principal) -> ClaimWriteResult:
         if self._gated():
@@ -340,10 +361,11 @@ class VersionedStore:
                 items=[ChangeItemInput(record_type="claim", op="claim_create", payload=payload.model_dump(mode="json", exclude={"expected_data_epoch"}))],
                 principal=principal,
             )
-        result = await self._inner.write_claim(payload, principal=principal)
-        self._record_claim(await self._raw_claim(result.claim), author=principal)
-        self._record_new_terms(author=principal)
-        return result
+        async with self._atomic():
+            result = await self._inner.write_claim(payload, principal=principal)
+            self._record_claim(await self._raw_claim(result.claim), author=principal)
+            self._record_new_terms(author=principal)
+            return result
 
     async def update_claim(
         self, claim_id: str, patch: ClaimUpdateInput, *, principal: Principal
@@ -365,50 +387,57 @@ class VersionedStore:
                                            payload={"claim_id": claim_id, **patch.model_dump(mode="json", exclude_none=True, exclude={"expected_data_epoch"})})],
                     principal=principal,
                 )
-        result = await self._inner.update_claim(claim_id, patch, principal=principal)
-        self._record_claim(await self._raw_claim(result.claim), author=principal, op="update")
-        self._record_new_terms(author=principal)
-        return result
+        async with self._atomic():
+            result = await self._inner.update_claim(claim_id, patch, principal=principal)
+            self._record_claim(await self._raw_claim(result.claim), author=principal, op="update")
+            self._record_new_terms(author=principal)
+            return result
 
     async def resolve_conflict(
         self, resolution: ConflictResolutionInput, *, principal: Principal
     ) -> ConflictSet:
-        result = await self._inner.resolve_conflict(resolution, principal=principal)
-        getter = getattr(self._inner, "get_claim_raw", None)
-        if getter is not None and result.winning_claim_id:
-            winner = await getter(result.winning_claim_id)
-            if winner is not None:
-                self._record_claim(winner, author=principal, op="update")
-        return result
+        async with self._atomic():
+            result = await self._inner.resolve_conflict(resolution, principal=principal)
+            getter = getattr(self._inner, "get_claim_raw", None)
+            if getter is not None and result.winning_claim_id:
+                winner = await getter(result.winning_claim_id)
+                if winner is not None:
+                    self._record_claim(winner, author=principal, op="update")
+            return result
 
     async def seed_memory_raw(self, memory: MemoryRecord) -> MemoryRecord:
-        result = await self._inner.seed_memory_raw(memory)
-        self._record_memory(result, op="baseline")
-        return result
+        async with self._atomic():
+            result = await self._inner.seed_memory_raw(memory)
+            self._record_memory(result, op="baseline")
+            return result
 
     async def upsert_memory(self, record: MemoryUpsertInput, *, principal: Principal) -> MemoryRecord:
-        result = await self._inner.upsert_memory(record, principal=principal)
-        self._record_memory(result, author=principal)
-        return result
+        async with self._atomic():
+            result = await self._inner.upsert_memory(record, principal=principal)
+            self._record_memory(result, author=principal)
+            return result
 
     async def delete_memory(self, memory_id: str, *, principal: Principal) -> bool:
-        deleted = await self._inner.delete_memory(memory_id, principal=principal)
-        if deleted:
-            self._record(
-                "memory", memory_id, None, wall_side=None, read_acl=None, owner=principal.user_id,
-                op="delete", author=principal, title="Delete memory",
-            )
-        return deleted
+        async with self._atomic():
+            deleted = await self._inner.delete_memory(memory_id, principal=principal)
+            if deleted:
+                self._record(
+                    "memory", memory_id, None, wall_side=None, read_acl=None, owner=principal.user_id,
+                    op="delete", author=principal, title="Delete memory",
+                )
+            return deleted
 
     async def seed_watchlist_raw(self, wl: WatchlistRecord) -> WatchlistRecord:
-        result = await self._inner.seed_watchlist_raw(wl)
-        self._record_watchlist(result, op="baseline")
-        return result
+        async with self._atomic():
+            result = await self._inner.seed_watchlist_raw(wl)
+            self._record_watchlist(result, op="baseline")
+            return result
 
     async def put_watchlist(self, watchlist: WatchlistUpdateInput, *, principal: Principal) -> WatchlistRecord:
-        result = await self._inner.put_watchlist(watchlist, principal=principal)
-        self._record_watchlist(result, author=principal)
-        return result
+        async with self._atomic():
+            result = await self._inner.put_watchlist(watchlist, principal=principal)
+            self._record_watchlist(result, author=principal)
+            return result
 
     @staticmethod
     def _describe(record_type: str, rec: Any) -> tuple[str, dict[str, Any], str | None, list[str] | None, str | None]:
@@ -434,74 +463,75 @@ class VersionedStore:
 
         Written to the ledger in one transaction, so seeding thousands of records stays fast.
         """
-        await self._inner.import_state(state, reset_epochs=reset_epochs)
-        sources = {
-            "entity": state.get("entities", []),
-            "knowledge_item": state.get("knowledge_items", []),
-            "topic": state.get("topics", []),
-            "memory": state.get("memories", []),
-            "watchlist": state.get("watchlists", []),
-            "claim": state.get("claims", []),
-            # Every term after the import: the defaults, imported terms and terms proposed for
-            # values first seen in this import
-            "vocab_term": await self._inner.list_vocab_terms() if hasattr(self._inner, "list_vocab_terms") else [],
-        }
-        drain = getattr(self._inner, "drain_new_vocab_terms", None)
-        if drain is not None:
-            drain()
-        if not any(sources.values()):
-            return
-        first_time = not any(self._ledger.latest_hashes(rt) for rt in sources)
-        op = "baseline" if first_time else "import"
-        cs_id = new_change_id()
-        now = ts()
-        versions: list[VersionRecord] = []
-        for rt, records in sources.items():
-            if first_time:
-                seen_latest: dict[str, str | None] = {}
-                seen_any: set[tuple[str, str | None]] = set()
-            elif rt == "claim":
-                seen_latest, seen_any = {}, self._ledger.all_hashes("claim")
-            else:
-                seen_latest, seen_any = self._ledger.latest_hashes(rt), set()
-            for rec in records:
-                rid, payload, wall, acl, owner = self._describe(rt, rec)
-                digest = content_hash(payload)
-                if (rid, digest) in seen_any or (rid in seen_latest and seen_latest[rid] == digest):
-                    continue
-                if rt == "claim":
-                    seen_any.add((rid, digest))
+        async with self._atomic():
+            await self._inner.import_state(state, reset_epochs=reset_epochs)
+            sources = {
+                "entity": state.get("entities", []),
+                "knowledge_item": state.get("knowledge_items", []),
+                "topic": state.get("topics", []),
+                "memory": state.get("memories", []),
+                "watchlist": state.get("watchlists", []),
+                "claim": state.get("claims", []),
+                # Every term after the import: the defaults, imported terms and terms proposed for
+                # values first seen in this import
+                "vocab_term": await self._inner.list_vocab_terms() if hasattr(self._inner, "list_vocab_terms") else [],
+            }
+            drain = getattr(self._inner, "drain_new_vocab_terms", None)
+            if drain is not None:
+                drain()
+            if not any(sources.values()):
+                return
+            first_time = not any(self._ledger.latest_hashes(rt) for rt in sources)
+            op = "baseline" if first_time else "import"
+            cs_id = new_change_id()
+            now = ts()
+            versions: list[VersionRecord] = []
+            for rt, records in sources.items():
+                if first_time:
+                    seen_latest: dict[str, str | None] = {}
+                    seen_any: set[tuple[str, str | None]] = set()
+                elif rt == "claim":
+                    seen_latest, seen_any = {}, self._ledger.all_hashes("claim")
                 else:
-                    seen_latest[rid] = digest
-                versions.append(
-                    VersionRecord(
-                        record_type=rt, record_id=rid, version_no=0, change_id=cs_id, op=op, recorded_at=now,  # type: ignore[arg-type]
-                        wall_side=wall, read_acl_groups=acl, owner_user_id=owner,
-                        label=record_label(rt, payload), payload=payload, content_hash=digest,
+                    seen_latest, seen_any = self._ledger.latest_hashes(rt), set()
+                for rec in records:
+                    rid, payload, wall, acl, owner = self._describe(rt, rec)
+                    digest = content_hash(payload)
+                    if (rid, digest) in seen_any or (rid in seen_latest and seen_latest[rid] == digest):
+                        continue
+                    if rt == "claim":
+                        seen_any.add((rid, digest))
+                    else:
+                        seen_latest[rid] = digest
+                    versions.append(
+                        VersionRecord(
+                            record_type=rt, record_id=rid, version_no=0, change_id=cs_id, op=op, recorded_at=now,  # type: ignore[arg-type]
+                            wall_side=wall, read_acl_groups=acl, owner_user_id=owner,
+                            label=record_label(rt, payload), payload=payload, content_hash=digest,
+                        )
                     )
+            if not versions:
+                return
+            actor = current_actor.get()
+            self._ledger.save_change_set(
+                ChangeSet(
+                    change_id=cs_id,
+                    title="Initial import (baseline)" if first_time else "Import",
+                    kind="import",
+                    source="import",
+                    author_id=actor.user_id if actor else "system",
+                    author_name=actor.display_name if actor else "System",
+                    status="merged",
+                    approval="auto",
+                    rule_ids=["import"],
+                    implicit=True,
+                    created_at=now,
+                    decided_at=now,
+                    merged_at=now,
+                    merged_by=actor.user_id if actor else "system",
                 )
-        if not versions:
-            return
-        actor = current_actor.get()
-        self._ledger.save_change_set(
-            ChangeSet(
-                change_id=cs_id,
-                title="Initial import (baseline)" if first_time else "Import",
-                kind="import",
-                source="import",
-                author_id=actor.user_id if actor else "system",
-                author_name=actor.display_name if actor else "System",
-                status="merged",
-                approval="auto",
-                rule_ids=["import"],
-                implicit=True,
-                created_at=now,
-                decided_at=now,
-                merged_at=now,
-                merged_by=actor.user_id if actor else "system",
             )
-        )
-        self._ledger.append_versions(versions)
+            self._ledger.append_versions(versions)
 
 
 __all__ = ["VersionedStore", "current_actor", "new_change_id"]

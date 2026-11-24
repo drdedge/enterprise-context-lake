@@ -111,3 +111,52 @@ jobs:
             tests/e2e/test-results/
           if-no-files-found: ignore
           retention-days: 14
+
+  sqlserver:
+    name: SQL Server store (SQL Server 2022, db_ddladmin account)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Lake_CI_Sa_Password_1
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+    env:
+      MSSQL_SA_PASSWORD: Lake_CI_Sa_Password_1
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # ubuntu-latest ships Microsoft ODBC Driver 18; install it only if the image ever drops it
+      - name: ODBC Driver 18
+        run: |
+          if ! odbcinst -q -d | grep -q "ODBC Driver 18 for SQL Server"; then
+            curl -sSL -o /tmp/ms.deb https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
+            sudo dpkg -i /tmp/ms.deb && sudo apt-get update
+            sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          fi
+
+      - name: Install Python packages
+        run: python -m pip install -e ".[dev,sqlserver]"
+
+      - name: Create the test database and a db_ddladmin-only lake account
+        run: echo "LAKE_TEST_SQLSERVER_URL=$(python scripts/sqlserver_test_setup.py)" >> "$GITHUB_ENV"
+
+      - name: Storage tests and adapter conformance on SQL Server
+        run: python -m pytest -q tests/test_sqlserver_store.py tests/test_adapter_conformance.py
+
+      - name: Every API suite with SQL Server as the active store
+        env:
+          LAKE_TEST_API_ON_SQLSERVER: "1"
+        run: python -m pytest -q tests --ignore=tests/e2e

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
+import uuid
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,7 +33,24 @@ from conftest import (
 )
 
 
+#: SQL Server joins the matrix when a test server is configured, e.g.
+#: LAKE_TEST_SQLSERVER_URL="mssql+aioodbc://user:pw@127.0.0.1:1433/BSPAI?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+SQLSERVER_TEST_URL = os.environ.get("LAKE_TEST_SQLSERVER_URL", "").strip()
+STORE_KINDS = ["sqlite_bitemporal", "okf_markdown_vault"] + (["sqlserver_bitemporal"] if SQLSERVER_TEST_URL else [])
+
+
 def _instantiate_store(adapter_kind: str, base_dir: Path, policy: Any) -> Any:
+    if adapter_kind == "sqlserver_bitemporal":
+        from context_adapters.sqlserver_store import SqlServerBitemporalStore, SqlServerSettings
+
+        # Each store gets a throwaway schema (dropped by _close_store), encrypted with a local key
+        settings = SqlServerSettings(
+            url=SQLSERVER_TEST_URL,
+            schema=f"lake_test_{uuid.uuid4().hex[:10]}",
+            encryption="local",
+            local_master_key=os.urandom(32),
+        )
+        return SqlServerBitemporalStore(settings, policy=policy)
     if adapter_kind == "sqlite_bitemporal":
         cls = resolve_symbol(
             [
@@ -98,6 +117,14 @@ def _instantiate_retriever(retriever_kind: str, store: Any, policy: Any) -> Any:
     return cls(**kw) if kw else cls(store)
 
 
+async def _close_store(store: Any) -> None:
+    try:
+        if hasattr(store, "drop_all_for_tests"):
+            await store.drop_all_for_tests()
+    finally:
+        await store.close()
+
+
 async def _seed(store: Any) -> None:
     seed_fn = resolve_symbol(
         [
@@ -119,7 +146,7 @@ async def _seed(store: Any) -> None:
         seed_fn(store)
 
 
-@pytest.fixture(params=["sqlite_bitemporal", "okf_markdown_vault"])
+@pytest.fixture(params=STORE_KINDS)
 async def seeded_store(request, tmp_path: Path):
     """Yields each seeded StorePort adapter identically, with guaranteed teardown."""
     PolicyEngine = resolve_symbol(
@@ -139,7 +166,7 @@ async def seeded_store(request, tmp_path: Path):
         await _seed(store)
         yield adapter_kind, store, policy, sub_dir
     finally:
-        await store.close()
+        await _close_store(store)
 
 
 @pytest.mark.asyncio
@@ -277,7 +304,7 @@ async def test_store_acl_wall_evidence_and_memory_conformance(seeded_store) -> N
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("store_kind", ["sqlite_bitemporal", "okf_markdown_vault"])
+@pytest.mark.parametrize("store_kind", STORE_KINDS)
 @pytest.mark.parametrize("retriever_kind", ["lexical_manifest", "facet_graph"])
 async def test_retrieval_adapter_conformance_matrix(store_kind: str, retriever_kind: str, tmp_path: Path) -> None:
     """2x2 matrix: BOTH RetrievalPort adapters over BOTH StorePort adapters produce equivalent authorized results."""
@@ -342,7 +369,7 @@ async def test_retrieval_adapter_conformance_matrix(store_kind: str, retriever_k
         navs = [f for f in bundle.facts if f.predicate == "composite_nav_usd"]
         assert len(navs) == 1 and navs[0].object_value == "1284500000"
     finally:
-        await store.close()
+        await _close_store(store)
 
 
 @given(
@@ -454,7 +481,7 @@ def test_hypothesis_bitemporal_equivalence_across_both_stores(
             )
 
             results_by_adapter: dict[str, list[str]] = {}
-            for kind in ("sqlite_bitemporal", "okf_markdown_vault"):
+            for kind in STORE_KINDS:
                 sdir = base_dir / kind
                 sdir.mkdir(parents=True, exist_ok=True)
                 store = _instantiate_store(kind, sdir, policy)
@@ -479,13 +506,15 @@ def test_hypothesis_bitemporal_equivalence_across_both_stores(
                     )
                     results_by_adapter[kind] = sorted(c.claim_id for c in got)
                 finally:
-                    await store.close()
+                    await _close_store(store)
 
             expected_ids = sorted(
                 (["clm-hyp-v1"] if expected_v1 else []) + (["clm-hyp-v2"] if expected_v2 else [])
             )
             assert results_by_adapter["sqlite_bitemporal"] == expected_ids
             assert results_by_adapter["okf_markdown_vault"] == expected_ids
+            if "sqlserver_bitemporal" in results_by_adapter:
+                assert results_by_adapter["sqlserver_bitemporal"] == expected_ids
 
     asyncio.run(_run())
 
@@ -600,7 +629,8 @@ async def test_runtime_adapter_hotswap_via_rest_api(api_client) -> None:
     pub_hdrs = mock_headers("user:public-analyst")
 
     cfg0 = (await api_client.get("/api/v1/config/adapters", headers=steward_hdrs)).json()
-    assert cfg0["store"] in ("sqlite_bitemporal", "okf_markdown_vault")
+    assert cfg0["store"] in STORE_KINDS
+    back_to = cfg0["store"] if cfg0["store"] != "okf_markdown_vault" else "sqlite_bitemporal"
     assert cfg0["retrieval"] in ("lexical_manifest", "facet_graph")
 
     # Baseline query on default adapters
@@ -647,12 +677,12 @@ async def test_runtime_adapter_hotswap_via_rest_api(api_client) -> None:
     nav_val_after = next(f["object_value"] for f in swapped_nav["facts"] if f["predicate"] == "composite_nav_usd")
     assert nav_val_before == nav_val_after == "1284500000"
 
-    # Swap back to sqlite_bitemporal + lexical_manifest
+    # Swap back to the starting relational store (SQLite, or SQL Server when the suite runs on it)
     swap2 = await api_client.put(
         "/api/v1/config/adapters",
         headers=steward_hdrs,
-        json={"store": "sqlite_bitemporal", "retrieval": "lexical_manifest"},
+        json={"store": back_to, "retrieval": "lexical_manifest"},
     )
     assert swap2.status_code == 200, swap2.text
-    assert swap2.json()["store"] == "sqlite_bitemporal"
+    assert swap2.json()["store"] == back_to
     assert swap2.json()["retrieval"] == "lexical_manifest"
