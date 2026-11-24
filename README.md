@@ -148,6 +148,8 @@ By default this writes to a local folder emulation (`<runtime_dir>/context_hub`,
 
 Each entity has a wiki-style page built on request from the claims you may read, with every statement citing its source claim, a Mermaid relationship diagram, open conflicts and recent changes ([ADR-009](docs/adr/ADR-009-entity-pages.md)). Pages are cut by wall side: a public-side page never carries private-side material. Overviews and answers are written deterministically by default. Only public-side material ever goes to an external model.
 
+In production the lake runs on SQL Server, with files in S3 ([ADR-010](docs/adr/ADR-010-sql-server-and-s3-storage.md), [runbook 06](docs/runbooks/06-sql-server-and-s3.md)). Tables live in their own `lake` schema (or as `dbo.lake_*`), are only ever added to, and hold no readable free text: names, values, excerpts, notes and history are encrypted by the app with an AWS KMS data key before they are saved. An approved change and its history commit in one transaction, all or nothing. SQLite remains the default for local development.
+
 - `GET /api/v1/wiki/pages`: page list grouped by entity type, with each type's section outline.
 - `GET /api/v1/wiki/pages/{id_or_key}?format=markdown`: one page (also `side`, `as_of`, `channel`, `release`).
 - `POST /api/v1/wiki/ask` with `{"question": "..."}`: a cited answer built from the relevant pages.
@@ -166,6 +168,7 @@ Each entity has a wiki-style page built on request from the claims you may read,
 - [ADR-007: Git-like Version Control for Context](docs/adr/ADR-007-context-version-control.md)
 - [ADR-008: Editable Taxonomy and Access Checks in the Query](docs/adr/ADR-008-editable-taxonomy-and-acl-sets.md)
 - [ADR-009: Entity Pages Built from Claims](docs/adr/ADR-009-entity-pages.md)
+- [ADR-010: SQL Server and S3 Storage](docs/adr/ADR-010-sql-server-and-s3-storage.md)
 
 ### Operational Runbooks
 - [01 — Claude Code MCP Integration](docs/runbooks/01-claude-code-mcp.md)
@@ -173,6 +176,7 @@ Each entity has a wiki-style page built on request from the claims you may read,
 - [03 — LangGraph & DeepAgents Harness](docs/runbooks/03-langgraph-deepagents.md)
 - [04 — Server-Hosted Skills & `context_sdk`](docs/runbooks/04-server-hosted-skills-sdk.md)
 - [05 — Server-Side Code Mode Security & Sandbox](docs/runbooks/05-codemode-security-and-sandbox.md)
+- [06 — Running the Lake on SQL Server, KMS and S3](docs/runbooks/06-sql-server-and-s3.md)
 
 ## Verified Workspace Screenshots (`1440x900`, WCAG 2.2 AA — 0 Violations)
 

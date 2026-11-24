@@ -85,6 +85,7 @@ from context_core.models import (
 from context_core.policy import PolicyEngine, sanitize_uri_secrets, wall_allows
 from context_core.vocabulary import VocabTerm, default_terms
 from context_adapters._vocab_common import VocabularyStoreMixin
+from context_adapters.sealed import SealedText
 from context_adapters._store_common import (
     apply_topic_patch,
     check_toctou_epoch,
@@ -96,6 +97,8 @@ from context_adapters._store_common import (
 # ---------------------------------------------------------------------------
 # Portable SQLAlchemy Core Schema (SQLite / SQL Server / Postgres compatible)
 # ---------------------------------------------------------------------------
+# SealedText columns hold free text that the SQL Server store encrypts with a KMS data key before
+# saving (ADR-010). On SQLite no cipher is attached and they are ordinary TEXT columns.
 
 metadata = MetaData()
 
@@ -125,14 +128,14 @@ t_entities = Table(
     Column("entity_id", String(128), primary_key=True),
     Column("entity_type", String(64), nullable=False, index=True),
     Column("canonical_key", String(256), nullable=False, unique=True, index=True),
-    Column("display_name", String(512), nullable=False),
-    Column("aliases_json", Text, nullable=False),
-    Column("description", Text, nullable=False),
+    Column("display_name", SealedText, nullable=False),
+    Column("aliases_json", SealedText, nullable=False),
+    Column("description", SealedText, nullable=False),
     Column("owner_group", String(128), nullable=False),
     Column("wall_side", String(32), nullable=False, index=True),
     Column("read_acl_groups_json", Text, nullable=False),
     Column("write_acl_groups_json", Text, nullable=False),
-    Column("attributes_json", Text, nullable=False),
+    Column("attributes_json", SealedText, nullable=False),
     Column("status", String(32), nullable=False),
     Column("created_at", String(64), nullable=False),
     Column("updated_at", String(64), nullable=False),
@@ -164,8 +167,8 @@ t_entity_lineage_events = Table(
     Column("event_type", String(64), nullable=False),
     Column("effective_date", String(64), nullable=False),
     Column("recorded_at", String(64), nullable=False),
-    Column("summary", Text, nullable=False),
-    Column("evidence_uri", Text, nullable=True),
+    Column("summary", SealedText, nullable=False),
+    Column("evidence_uri", SealedText, nullable=True),
     Column("evidence_acl_groups_json", Text, nullable=False),
     Column("wall_side", String(32), nullable=False),
     Column("read_acl_groups_json", Text, nullable=False),
@@ -222,7 +225,7 @@ t_claims = Table(
     Column("claim_id", String(128), primary_key=True),
     Column("subject_id", String(128), nullable=False, index=True),
     Column("predicate", String(128), nullable=False, index=True),
-    Column("object_value", Text, nullable=False),
+    Column("object_value", SealedText, nullable=False),
     Column("object_entity_id", String(128), nullable=True, index=True),
     Column("context_purpose", String(128), nullable=False, index=True),
     Column("scope_type", String(32), nullable=False, index=True),
@@ -231,8 +234,8 @@ t_claims = Table(
     Column("epistemic_status", String(64), nullable=False, index=True),
     Column("kind", String(64), nullable=True),
     Column("is_mandatory", Boolean, nullable=False),
-    Column("facets_json", Text, nullable=False),
-    Column("provenance_json", Text, nullable=False),
+    Column("facets_json", SealedText, nullable=False),
+    Column("provenance_json", SealedText, nullable=False),
     Column("wall_side", String(32), nullable=False, index=True),
     Column("acl_json", Text, nullable=False),
     Column("valid_from", String(64), nullable=False, index=True),
@@ -255,11 +258,11 @@ t_conflict_sets = Table(
     Column("scope_id", String(256), nullable=False),
     Column("status", String(32), nullable=False, index=True),
     Column("winning_claim_id", String(128), nullable=True),
-    Column("resolution_rationale", Text, nullable=True),
+    Column("resolution_rationale", SealedText, nullable=True),
     Column("resolved_by", String(128), nullable=True),
     Column("resolved_at", String(64), nullable=True),
     Column("created_at", String(64), nullable=False),
-    Column("summary", Text, nullable=False),
+    Column("summary", SealedText, nullable=False),
 )
 
 t_conflict_set_members = Table(
@@ -303,16 +306,16 @@ t_knowledge_items = Table(
     metadata,
     Column("item_id", String(128), primary_key=True),
     Column("knowledge_kind", String(64), nullable=False, index=True),
-    Column("display_name", String(512), nullable=False),
+    Column("display_name", SealedText, nullable=False),
     Column("slug", String(256), nullable=False),
     Column("source_path", Text, nullable=False),
-    Column("body_markdown", Text, nullable=False),
+    Column("body_markdown", SealedText, nullable=False),
     Column("wall_side", String(32), nullable=False),
     Column("read_acl_groups_json", Text, nullable=False),
     Column("write_acl_groups_json", Text, nullable=False),
     Column("topics_json", Text, nullable=False),
     Column("related_entities_json", Text, nullable=False),
-    Column("metadata_json", Text, nullable=False),
+    Column("metadata_json", SealedText, nullable=False),
     Column("content_sha256", String(128), nullable=True),
     Column("valid_from", String(64), nullable=False),
     Column("recorded_at", String(64), nullable=False),
@@ -327,10 +330,10 @@ t_curator_patches = Table(
     Column("read_acl_groups_json", Text, nullable=False),
     Column("target_type", String(64), nullable=False),
     Column("target_id", String(128), nullable=False),
-    Column("title", String(512), nullable=False),
-    Column("rationale", Text, nullable=False),
-    Column("unified_diff", Text, nullable=False),
-    Column("proposed_changes_json", Text, nullable=False),
+    Column("title", SealedText, nullable=False),
+    Column("rationale", SealedText, nullable=False),
+    Column("unified_diff", SealedText, nullable=False),
+    Column("proposed_changes_json", SealedText, nullable=False),
     Column("source_claim_ids_json", Text, nullable=False),
     Column("stale_evidence_paths_json", Text, nullable=False),
     Column("status", String(64), nullable=False, index=True),
@@ -348,7 +351,7 @@ t_personal_memories = Table(
     Column("scope_type", String(32), nullable=False),
     Column("skill_id", String(128), nullable=True),
     Column("key", String(256), nullable=False),
-    Column("content", Text, nullable=False),
+    Column("content", SealedText, nullable=False),
     Column("tags_json", Text, nullable=False),
     Column("linked_entity_ids_json", Text, nullable=False),
     Column("linked_topic_ids_json", Text, nullable=False),
@@ -371,7 +374,7 @@ t_receipts = Table(
     metadata,
     Column("receipt_id", String(128), primary_key=True),
     Column("principal_id", String(128), nullable=False, index=True),
-    Column("payload_json", Text, nullable=False),
+    Column("payload_json", SealedText, nullable=False),
     Column("created_at", String(64), nullable=False),
 )
 
@@ -1460,6 +1463,10 @@ class SqliteBitemporalStore(VocabularyStoreMixin):
             ]
         return idents
 
+    def _insertion_order(self, table: Table) -> list[Any]:
+        """ORDER BY terms that list a table's rows in the order they were written."""
+        return [text("rowid")]
+
     async def list_identifiers_for(
         self,
         entity_ids: Sequence[str] | None = None,
@@ -1480,7 +1487,7 @@ class SqliteBitemporalStore(VocabularyStoreMixin):
             stmt = select(t_entity_identifiers)
             if wanted is not None and len(wanted) <= 500:
                 stmt = stmt.where(t_entity_identifiers.c.entity_id.in_(sorted(wanted)))
-            rows = (await conn.execute(stmt.order_by(text("rowid")))).fetchall()
+            rows = (await conn.execute(stmt.order_by(*self._insertion_order(t_entity_identifiers)))).fetchall()
         out: dict[str, list[EntityIdentifier]] = {}
         for r in rows:
             if wanted is not None and r.entity_id not in wanted:

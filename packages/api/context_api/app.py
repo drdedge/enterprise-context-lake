@@ -35,7 +35,7 @@ def create_app(
     repo_root: Path | str | None = None,
     db_path: Path | str | None = None,
     runtime_dir: Path | str | None = None,
-    active_store: Literal["sqlite_bitemporal", "okf_markdown_vault"] = "sqlite_bitemporal",
+    active_store: Literal["sqlite_bitemporal", "okf_markdown_vault", "sqlserver_bitemporal"] | None = None,
     active_retrieval: Literal["lexical_manifest", "facet_graph"] = "lexical_manifest",
     llm_mode: LlmMode = "auto",
     auth_mode: Literal["mock", "entra_jwt"] | None = None,

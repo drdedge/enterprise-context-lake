@@ -46,6 +46,10 @@ def enforce_offline_env() -> None:
         "CONTEXT_TRACING_LANGSMITH",
         "CONTEXT_TRACING_INTERNAL_OTLP_ENDPOINT",
         "CONTEXT_TRACE_CONTENT",
+        # The lake's production database is only ever reached through LAKE_TEST_SQLSERVER_URL
+        "LAKE_SQLSERVER_URL",
+        "LAKE_SQLSERVER_PASSWORD",
+        "LAKE_STORE",
     ):
         os.environ.pop(secret_key, None)
 
@@ -209,6 +213,25 @@ async def api_app(tmp_path: Path):
     os.environ["CONTEXT_LAKE_VAULT_DIR"] = str(okf_dir)
     os.environ["CONTEXT_LAKE_UPLOAD_DIR"] = str(upload_dir)
 
+    # LAKE_TEST_API_ON_SQLSERVER=1 runs every API suite on the SQL Server store (own throwaway schema,
+    # local-key encryption, history in SQL Server) instead of SQLite. Needs LAKE_TEST_SQLSERVER_URL.
+    mssql_env: dict[str, str] = {}
+    if os.environ.get("LAKE_TEST_API_ON_SQLSERVER") == "1" and os.environ.get("LAKE_TEST_SQLSERVER_URL"):
+        import base64
+        import uuid
+
+        mssql_env = {
+            "LAKE_SQLSERVER_URL": os.environ["LAKE_TEST_SQLSERVER_URL"],
+            "LAKE_SQL_SCHEMA": f"lake_test_{uuid.uuid4().hex[:10]}",
+            "LAKE_ENCRYPTION": "local",
+            "LAKE_LOCAL_MASTER_KEY": base64.b64encode(os.urandom(32)).decode(),
+            "LAKE_SEED_FIXTURES": "1",
+            "LAKE_SQL_ALLOW_REPLACE": "1",  # the hot-swap test copies state back into SQL Server
+        }
+        os.environ.update(mssql_env)
+        if "active_store" in sig.parameters:
+            kwargs["active_store"] = "sqlserver_bitemporal"
+
     app = create_app(**kwargs)
     ready = asyncio.Event()
     stop = asyncio.Event()
@@ -233,6 +256,18 @@ async def api_app(tmp_path: Path):
     finally:
         stop.set()
         await lifespan_task
+        if mssql_env:
+            from context_adapters.sqlserver_store import SqlServerBitemporalStore, SqlServerSettings
+            from context_adapters.sqlserver_ledger import SqlServerVersionLedger
+
+            leftover = SqlServerBitemporalStore(SqlServerSettings.from_env())
+            SqlServerVersionLedger(leftover).close()  # registers the ledger tables so they are dropped too
+            try:
+                await leftover.drop_all_for_tests()
+            finally:
+                await leftover.close()
+            for k in mssql_env:
+                os.environ.pop(k, None)
         for k, v in prev_env.items():
             if v is None:
                 os.environ.pop(k, None)
