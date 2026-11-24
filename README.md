@@ -61,7 +61,7 @@ flowchart TB
 
 ## Windows Quickstart
 
-Prerequisites: `.venv` (Python 3.15+), Node.js 24+ (for Vite frontend, Node `--permission` Code Mode sandbox, and Playwright E2E). All verification suites run 100% offline with zero API keys required.
+Prerequisites: `.venv` (Python 3.14+), Node.js 24+ (for Vite frontend, Node `--permission` Code Mode sandbox, and Playwright E2E). All verification suites run 100% offline with zero API keys required.
 
 ### 1. Start Local Dev Servers (FastAPI `:8000` + Vite `:5173`)
 
