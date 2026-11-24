@@ -49,6 +49,9 @@ packages = [
     "context_agents",
 ]
 
+[tool.setuptools.package-data]
+context_core = ["*.yaml"]
+
 [tool.setuptools.package-dir]
 context_core = "packages/core/context_core"
 context_adapters = "packages/adapters/context_adapters"

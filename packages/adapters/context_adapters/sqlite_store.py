@@ -1795,6 +1795,19 @@ class SqliteBitemporalStore:
             snapshot_scheduled=updated_claim.epistemic_status == "approved_fact",
         )
 
+    async def get_claim_raw(self, claim_id: str) -> Claim | None:
+        """Unsanitized claim for internal bookkeeping (version history). Never return it to a caller."""
+        await self._ensure_init()
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(select(t_claims).where(t_claims.c.claim_id == claim_id))).first()
+        return self._row_to_claim(row) if row is not None else None
+
+    async def get_entity_raw(self, entity_id_or_key: str) -> Entity | None:
+        """Unfiltered entity for internal policy decisions (steward groups). Never return it to a caller."""
+        await self._ensure_init()
+        async with self._engine.connect() as conn:
+            return await self._get_entity_raw(conn, entity_id_or_key)
+
     async def get_claim(self, claim_id: str, *, principal: Principal) -> Claim | None:
         await self._ensure_init()
         eff = await self._effective_principal(principal)
