@@ -1,0 +1,91 @@
+# Approval rules for context change sets (DRAFT: starting rules awaiting Dave's review).
+#
+# Every change to context (from the UI, an MCP/API harness, a lake agent or an upload) becomes a
+# change set. Each item in the change set is matched against these rules, top to bottom, and the
+# FIRST matching rule decides that item. The change set then needs the strictest outcome of its
+# items: if any item needs review, the whole change set waits for approval.
+#
+# Override this file without touching code by pointing CONTEXT_LAKE_APPROVAL_RULES at another YAML
+# or JSON file with the same shape.
+#
+# match keys (all optional; every key given must match):
+#   kinds:              change | revert
+#   record_types:       entity | knowledge_item | topic | claim | memory | watchlist
+#   ops:                upsert | delete | claim_create | claim_update
+#   sources:            ui | api | harness | agent | upload | import | system
+#   wall_sides:         wall side of the record after the change
+#   epistemic_statuses: claim status after the change
+#   privileged:         true when a claim change creates or edits an approved fact or a mandatory
+#                       directive, or edits an existing claim
+#   crosses_wall:       true when the change moves a record to a different wall side
+#   author_is_owner:    true when a personal memory or watchlist is changed by its owner
+#   author_is_steward:  true when the author is in the record's steward groups (write_acl_groups of
+#                       the record or of a claim's subject entity; owner_group for topics)
+#
+# outcome keys:
+#   approval:           auto | review
+#   approvers:          who may approve: "steward" (the record's steward groups) or "group:<name>"
+#   min_approvals:      distinct approvers needed (each listed approver kind must be covered)
+#   allow_self_approval: whether the author may approve their own change set
+
+release_managers:
+  # Who may cut releases and move the staging / production pointers.
+  groups: [fund-stewards, compliance-oversight]
+
+rules:
+  - id: wall-crossing
+    description: Moving a record across the information barrier needs compliance and a steward.
+    match: {crosses_wall: true}
+    approval: review
+    approvers: ["group:compliance-oversight", "steward"]
+    min_approvals: 2
+
+  - id: personal-owner
+    description: People edit their own personal memory and watchlist freely.
+    match: {record_types: [memory, watchlist], author_is_owner: true}
+    approval: auto
+
+  - id: upload-observation
+    description: Uploads land as unverified observations, which never override approved facts.
+    match: {record_types: [claim], ops: [claim_create], sources: [upload], privileged: false}
+    approval: auto
+
+  - id: agent-proposal-low-risk
+    description: Agents and harnesses may add unverified observations, candidate SOPs and disputes.
+    match:
+      record_types: [claim]
+      ops: [claim_create]
+      sources: [agent, harness]
+      epistemic_statuses: [unverified_observation, candidate_sop, disputed]
+    approval: auto
+
+  - id: agent-privileged
+    description: An agent or harness changing approved facts, directives or entities needs a steward.
+    match: {sources: [agent, harness], record_types: [claim, entity, knowledge_item, topic]}
+    approval: review
+    approvers: [steward]
+    min_approvals: 1
+
+  - id: private-side
+    description: Private-side changes by someone who is not a steward need a steward.
+    match: {wall_sides: [private_side], author_is_steward: false}
+    approval: review
+    approvers: [steward]
+    min_approvals: 1
+
+  - id: steward-self
+    description: Stewards editing records they steward are approved automatically (and recorded).
+    match: {author_is_steward: true}
+    approval: auto
+
+  - id: low-risk-claim
+    description: Anyone may add unverified observations.
+    match: {record_types: [claim], ops: [claim_create], privileged: false, epistemic_statuses: [unverified_observation]}
+    approval: auto
+
+  - id: default-review
+    description: Everything else needs one steward.
+    match: {}
+    approval: review
+    approvers: [steward]
+    min_approvals: 1

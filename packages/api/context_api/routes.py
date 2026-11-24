@@ -39,6 +39,7 @@ from context_core.models import (
 )
 from context_core.policy import sanitize_uri_secrets, validate_no_ssrf
 from context_core.receipts import build_receipt
+from context_adapters.versioned_store import current_actor
 from context_mcp.security import validate_safe_uri
 
 from context_api.auth import parse_if_match_epoch
@@ -66,7 +67,22 @@ def _get_ctx(request: Request) -> Any:
 
 async def _current_principal(request: Request) -> Principal:
     ctx = _get_ctx(request)
-    return await ctx.auth.resolve_principal(request.headers, store=ctx.registry.store)
+    principal = await ctx.auth.resolve_principal(request.headers, store=ctx.registry.store)
+    # Attribute writes made during this request (version history, ADR-007)
+    current_actor.set(principal)
+    return principal
+
+
+def _channel_recorded_as_of(
+    request: Request, channel: str | None, release: int | None, fallback: datetime | None
+) -> datetime | None:
+    """Read a published channel (dev / staging / production) or a numbered release (ADR-007)."""
+    if not channel and release is None:
+        return fallback
+    svc = getattr(_get_ctx(request).registry, "versions", None)
+    if svc is None:
+        raise ValidationError("Version control is not enabled for this runtime")
+    return _parse_dt(svc.resolve_as_of(channel=channel, release=release)) or fallback
 
 
 def _is_steward(principal: Principal) -> bool:
@@ -367,7 +383,7 @@ async def get_stream(
         principal=principal,
         entity_types=[entity_type] if entity_type else None,
         topic_slug=topic,
-        limit=500,
+        limit=None,
         offset=0,
     )
     claims = await store.query_claims(
@@ -508,7 +524,7 @@ async def list_entities(
         principal=principal,
         entity_types=[entity_type] if entity_type else None,
         topic_slug=topic,
-        limit=500,
+        limit=None,
         offset=0,
     )
     claims = await store.query_claims(
@@ -848,7 +864,7 @@ async def list_topics(
 
     topics = await store.list_topics(principal=principal, include_archived=include_archived)
     attachments = await store.list_topic_attachments(principal=principal)
-    auth_eids = {e.entity_id for e in await store.list_entities(principal=principal, limit=1000)}
+    auth_eids = {e.entity_id for e in await store.list_entities(principal=principal, limit=None)}
     auth_cids = {
         c.claim_id
         for c in await store.query_claims(
@@ -1313,6 +1329,8 @@ async def get_context_resolve(
     recorded_as_of: str | None = None,
     recorded_at: str | None = None,
     snapshot_version: int | None = None,
+    channel: str | None = None,
+    release: int | None = None,
     principal: Principal = Depends(_current_principal),
 ) -> Any:
     keys = [k.strip() for k in entity_keys.split(",") if k.strip()]
@@ -1324,7 +1342,9 @@ async def get_context_resolve(
         context_purpose=context_purpose,
         include_unverified=include_unverified,
         as_of=_parse_dt(as_of),
-        recorded_as_of=_effective_recorded(recorded_as_of, recorded_at),
+        recorded_as_of=_channel_recorded_as_of(
+            request, channel, release, _effective_recorded(recorded_as_of, recorded_at)
+        ),
         snapshot_version=snapshot_version,
         tool_or_endpoint="api.context.resolve",
     )
@@ -1347,6 +1367,8 @@ async def list_claims(
     as_of: str | None = None,
     recorded_as_of: str | None = None,
     recorded_at: str | None = None,
+    channel: str | None = None,
+    release: int | None = None,
     principal: Principal = Depends(_current_principal),
 ) -> dict[str, Any]:
     ctx = _get_ctx(request)
@@ -1366,7 +1388,9 @@ async def list_claims(
         scope_types=[scope_type] if scope_type else None,
         epistemic_statuses=[epistemic_status] if epistemic_status else None,
         as_of=_parse_dt(as_of),
-        recorded_as_of=_effective_recorded(recorded_as_of, recorded_at),
+        recorded_as_of=_channel_recorded_as_of(
+            request, channel, release, _effective_recorded(recorded_as_of, recorded_at)
+        ),
     )
     return {"claims": [c.model_dump(mode="json") for c in claims], "total": len(claims)}
 

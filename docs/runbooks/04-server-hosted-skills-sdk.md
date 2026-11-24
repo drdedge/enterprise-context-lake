@@ -6,7 +6,7 @@ Run deterministic, sub-millisecond institutional lookups inside server-hosted sk
 
 ## 1. Snapshot Partitioning & Compilation
 
-Snapshots are physically partitioned by `(acl_tier, wall_side)` (e.g. `firm-all__public_side`, `private-credit-deal-team__private_side`) and compiled asynchronously off the event loop (`asyncio.to_thread`) using Python 3.15 stdlib `compression.zstd`:
+Snapshots are physically partitioned by `(acl_tier, wall_side)` (e.g. `firm-all__public_side`, `private-credit-deal-team__private_side`) and compiled asynchronously off the event loop (`asyncio.to_thread`) using Python 3.14+ stdlib `compression.zstd`:
 
 - Zero unauthorized rows, zero private memories, zero `unverified_observation` rows, and zero restricted `evidence_uri` / `excerpt` strings exist anywhere in a partition's binary `.sqlite.zst` file.
 - Manifest updates write `manifest.json.tmp.<pid>.<tid>` and call `os.replace()` with a Windows NTFS sharing-violation retry loop.

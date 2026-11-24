@@ -35,6 +35,7 @@ from context_core.exceptions import (
     ValidationError,
 )
 from context_core.models import (
+    clone_model,
     Claim,
     ClaimCreateInput,
     ClaimUpdateInput,
@@ -447,7 +448,7 @@ class OkfMarkdownVaultStore:
 
     async def get_epochs(self) -> PolicyEpochState:
         await self._ensure_init()
-        return self._epochs.model_copy(deep=True)
+        return clone_model(self._epochs)
 
     async def bump_policy_epoch(self, reason: str, actor: str) -> PolicyEpochState:
         await self._ensure_init()
@@ -460,7 +461,7 @@ class OkfMarkdownVaultStore:
                 last_actor=actor,
             )
             self._persist_meta_sync()
-            return self._epochs.model_copy(deep=True)
+            return clone_model(self._epochs)
 
     async def is_principal_revoked(self, user_id: str) -> bool:
         await self._ensure_init()
@@ -482,7 +483,7 @@ class OkfMarkdownVaultStore:
                 last_actor=actor,
             )
             self._persist_meta_sync()
-            return self._epochs.model_copy(deep=True)
+            return clone_model(self._epochs)
 
     # ------------------------------------------------------------------
     # Plane 1: Entities, Crosswalks, Lineage & Reified Associations
@@ -497,7 +498,7 @@ class OkfMarkdownVaultStore:
     async def upsert_entity(self, entity: Entity) -> Entity:
         await self._ensure_init()
         async with self._lock:
-            self._entities[entity.entity_id] = entity.model_copy(deep=True)
+            self._entities[entity.entity_id] = clone_model(entity)
             self._key_to_id[entity.canonical_key] = entity.entity_id
             self._write_entity_markdown(entity)
             self._bump_data_epoch(f"upsert_entity:{entity.entity_id}", "system")
@@ -511,7 +512,7 @@ class OkfMarkdownVaultStore:
         ent = self._resolve_entity_raw(entity_id_or_key)
         if ent is None or not self.policy.can_read_entity(eff, ent):
             return None
-        return ent.model_copy(deep=True)
+        return clone_model(ent)
 
     async def list_entities(
         self,
@@ -519,7 +520,7 @@ class OkfMarkdownVaultStore:
         principal: Principal,
         entity_types: Sequence[str] | None = None,
         topic_slug: str | None = None,
-        limit: int = 200,
+        limit: int | None = 200,
         offset: int = 0,
     ) -> list[Entity]:
         await self._ensure_init()
@@ -528,7 +529,7 @@ class OkfMarkdownVaultStore:
             return []
         type_set = set(entity_types) if entity_types else None
         authorized = [
-            e.model_copy(deep=True)
+            clone_model(e)
             for e in sorted(self._entities.values(), key=lambda x: x.canonical_key)
             if (type_set is None or e.entity_type.value in type_set)
             and self.policy.can_read_entity(eff, e)
@@ -566,12 +567,14 @@ class OkfMarkdownVaultStore:
                 else:
                     matched_eids.add(att.target_id)
             authorized = [e for e in authorized if e.entity_id in matched_eids]
+        if limit is None:
+            return authorized[offset:]
         return authorized[offset : offset + limit]
 
     async def upsert_identifier(self, ident: EntityIdentifier) -> EntityIdentifier:
         await self._ensure_init()
         async with self._lock:
-            self._identifiers[ident.id] = ident.model_copy(deep=True)
+            self._identifiers[ident.id] = clone_model(ident)
             self._persist_meta_sync()
         return ident
 
@@ -583,12 +586,33 @@ class OkfMarkdownVaultStore:
         recorded_as_of: datetime | None = None,
     ) -> list[EntityIdentifier]:
         await self._ensure_init()
-        idents = [i.model_copy(deep=True) for i in self._identifiers.values() if i.entity_id == entity_id]
+        idents = [clone_model(i) for i in self._identifiers.values() if i.entity_id == entity_id]
         if as_of is not None or recorded_as_of is not None:
             idents = [
                 i for i in idents if is_identifier_visible(i, as_of=as_of, recorded_as_of=recorded_as_of)
             ]
         return idents
+
+    async def list_identifiers_for(
+        self,
+        entity_ids: Sequence[str] | None = None,
+        *,
+        as_of: datetime | None = None,
+        recorded_as_of: datetime | None = None,
+    ) -> dict[str, list[EntityIdentifier]]:
+        """Batched ``list_identifiers`` (``None`` = all entities); same order and filtering per entity."""
+        await self._ensure_init()
+        wanted = None if entity_ids is None else set(entity_ids)
+        out: dict[str, list[EntityIdentifier]] = {}
+        for i in self._identifiers.values():
+            if wanted is not None and i.entity_id not in wanted:
+                continue
+            if (as_of is not None or recorded_as_of is not None) and not is_identifier_visible(
+                i, as_of=as_of, recorded_as_of=recorded_as_of
+            ):
+                continue
+            out.setdefault(i.entity_id, []).append(clone_model(i))
+        return out
 
     async def add_lineage_event(self, event: EntityLineageEvent) -> EntityLineageEvent:
         await self._ensure_init()
@@ -617,10 +641,29 @@ class OkfMarkdownVaultStore:
         out.sort(key=lambda e: (e.effective_date, e.event_id))
         return out
 
+    async def list_lineage_events_for(
+        self, entity_ids: Sequence[str] | None = None, *, principal: Principal
+    ) -> list[EntityLineageEvent]:
+        """Batched ``list_lineage_events`` (``None`` = all events), sanitized and sorted."""
+        await self._ensure_init()
+        eff = await self._effective_principal(principal)
+        if eff.revoked:
+            return []
+        wanted = None if entity_ids is None else set(entity_ids)
+        out: list[EntityLineageEvent] = []
+        for ev in self._lineage.values():
+            if wanted is not None and ev.source_entity_id not in wanted and ev.target_entity_id not in wanted:
+                continue
+            san = self.policy.sanitize_lineage_for_principal(eff, ev)
+            if san is not None:
+                out.append(san)
+        out.sort(key=lambda e: (e.effective_date, e.event_id))
+        return out
+
     async def upsert_position(self, pos: Position) -> Position:
         await self._ensure_init()
         async with self._lock:
-            self._positions[pos.position_id] = pos.model_copy(deep=True)
+            self._positions[pos.position_id] = clone_model(pos)
             self._persist_meta_sync()
         return pos
 
@@ -644,13 +687,13 @@ class OkfMarkdownVaultStore:
             if self.policy.can_read_record(
                 eff, wall_side=pos.wall_side, read_acl_groups=pos.read_acl_groups
             ):
-                out.append(pos.model_copy(deep=True))
+                out.append(clone_model(pos))
         return out
 
     async def upsert_coverage(self, cov: Coverage) -> Coverage:
         await self._ensure_init()
         async with self._lock:
-            self._coverages[cov.coverage_id] = cov.model_copy(deep=True)
+            self._coverages[cov.coverage_id] = clone_model(cov)
             self._persist_meta_sync()
         return cov
 
@@ -674,13 +717,13 @@ class OkfMarkdownVaultStore:
             if self.policy.can_read_record(
                 eff, wall_side=cov.wall_side, read_acl_groups=cov.read_acl_groups
             ):
-                out.append(cov.model_copy(deep=True))
+                out.append(clone_model(cov))
         return out
 
     async def upsert_skill_binding(self, binding: SkillBinding) -> SkillBinding:
         await self._ensure_init()
         async with self._lock:
-            self._skill_bindings[binding.binding_id] = binding.model_copy(deep=True)
+            self._skill_bindings[binding.binding_id] = clone_model(binding)
             self._persist_meta_sync()
         return binding
 
@@ -697,7 +740,7 @@ class OkfMarkdownVaultStore:
                 continue
             if target_entity_id and sb.target_entity_id != target_entity_id:
                 continue
-            out.append(sb.model_copy(deep=True))
+            out.append(clone_model(sb))
         return out
 
     # ------------------------------------------------------------------
@@ -707,7 +750,7 @@ class OkfMarkdownVaultStore:
     async def seed_claim_raw(self, claim: Claim) -> Claim:
         await self._ensure_init()
         async with self._lock:
-            self._claims[claim.claim_id] = claim.model_copy(deep=True)
+            self._claims[claim.claim_id] = clone_model(claim)
             self._write_claim_evidence_sidecar(claim)
             self._persist_meta_sync()
         return claim
@@ -907,6 +950,18 @@ class OkfMarkdownVaultStore:
             data_epoch=new_epoch,
             snapshot_scheduled=updated.epistemic_status == "approved_fact",
         )
+
+    async def get_claim_raw(self, claim_id: str) -> Claim | None:
+        """Unsanitized claim for internal bookkeeping (version history). Never return it to a caller."""
+        await self._ensure_init()
+        clm = self._claims.get(claim_id)
+        return clone_model(clm) if clm is not None else None
+
+    async def get_entity_raw(self, entity_id_or_key: str) -> Entity | None:
+        """Unfiltered entity for internal policy decisions (steward groups). Never return it to a caller."""
+        await self._ensure_init()
+        ent = self._resolve_entity_raw(entity_id_or_key)
+        return clone_model(ent) if ent is not None else None
 
     async def get_claim(self, claim_id: str, *, principal: Principal) -> Claim | None:
         await self._ensure_init()
@@ -1135,7 +1190,7 @@ class OkfMarkdownVaultStore:
     async def upsert_topic(self, topic: Topic) -> Topic:
         await self._ensure_init()
         async with self._lock:
-            self._topics[topic.topic_id] = topic.model_copy(deep=True)
+            self._topics[topic.topic_id] = clone_model(topic)
             if topic.broader_topic_id and topic.broader_topic_id in self._topics:
                 parent = self._topics[topic.broader_topic_id]
                 if topic.topic_id not in parent.narrower_topic_ids:
@@ -1177,7 +1232,7 @@ class OkfMarkdownVaultStore:
         if eff.revoked:
             return []
         return [
-            t.model_copy(deep=True)
+            clone_model(t)
             for t in sorted(self._topics.values(), key=lambda x: x.slug)
             if include_archived or t.status != "archived"
         ]
@@ -1185,7 +1240,7 @@ class OkfMarkdownVaultStore:
     async def attach_topic(self, attachment: TopicAttachment) -> TopicAttachment:
         await self._ensure_init()
         async with self._lock:
-            self._attachments[attachment.attachment_id] = attachment.model_copy(deep=True)
+            self._attachments[attachment.attachment_id] = clone_model(attachment)
             if attachment.target_id in self._entities:
                 self._write_entity_markdown(self._entities[attachment.target_id])
             self._persist_meta_sync()
@@ -1211,13 +1266,13 @@ class OkfMarkdownVaultStore:
             if self.policy.can_read_record(
                 eff, wall_side=att.wall_side, read_acl_groups=att.read_acl_groups
             ):
-                out.append(att.model_copy(deep=True))
+                out.append(clone_model(att))
         return out
 
     async def upsert_knowledge_item(self, item: KnowledgeItem) -> KnowledgeItem:
         await self._ensure_init()
         async with self._lock:
-            self._knowledge_items[item.item_id] = item.model_copy(deep=True)
+            self._knowledge_items[item.item_id] = clone_model(item)
             self._write_knowledge_markdown(item)
             self._persist_meta_sync()
         return item
@@ -1236,7 +1291,7 @@ class OkfMarkdownVaultStore:
             if self.policy.can_read_record(
                 eff, wall_side=ki.wall_side, read_acl_groups=ki.read_acl_groups
             ):
-                out.append(ki.model_copy(deep=True))
+                out.append(clone_model(ki))
         return out
 
     async def list_curator_patches(
@@ -1253,13 +1308,13 @@ class OkfMarkdownVaultStore:
             if self.policy.can_read_record(
                 eff, wall_side=p.wall_side, read_acl_groups=p.read_acl_groups
             ):
-                out.append(p.model_copy(deep=True))
+                out.append(clone_model(p))
         return out
 
     async def save_curator_patch(self, patch: CuratorDraftPatch) -> CuratorDraftPatch:
         await self._ensure_init()
         async with self._lock:
-            self._curator_patches[patch.patch_id] = patch.model_copy(deep=True)
+            self._curator_patches[patch.patch_id] = clone_model(patch)
             self._persist_meta_sync()
         return patch
 
@@ -1270,7 +1325,7 @@ class OkfMarkdownVaultStore:
     async def seed_memory_raw(self, memory: MemoryRecord) -> MemoryRecord:
         await self._ensure_init()
         async with self._lock:
-            self._memories[memory.memory_id] = memory.model_copy(deep=True)
+            self._memories[memory.memory_id] = clone_model(memory)
             self._write_memory_markdown(memory)
             self._persist_meta_sync()
         return memory
@@ -1328,7 +1383,7 @@ class OkfMarkdownVaultStore:
             self._write_memory_markdown(mem)
             self._bump_data_epoch(f"upsert_memory:{mem.memory_id}", eff.user_id)
             self._persist_meta_sync()
-        return mem.model_copy(deep=True)
+        return clone_model(mem)
 
     async def get_memory(self, memory_id: str, *, principal: Principal) -> MemoryRecord | None:
         await self._ensure_init()
@@ -1340,7 +1395,7 @@ class OkfMarkdownVaultStore:
         mem = self._memories.get(memory_id)
         if mem is None or mem.user_id != eff.user_id:
             return None
-        return mem.model_copy(deep=True)
+        return clone_model(mem)
 
     async def list_memories(
         self, *, principal: Principal, skill_id: str | None = None
@@ -1352,7 +1407,7 @@ class OkfMarkdownVaultStore:
         if not self.policy.is_memory_allowed(eff):
             return []
         out = [
-            m.model_copy(deep=True)
+            clone_model(m)
             for m in self._memories.values()
             if m.user_id == eff.user_id
             and (skill_id is None or m.skill_id == skill_id or m.scope_type == "user")
@@ -1384,8 +1439,8 @@ class OkfMarkdownVaultStore:
         if not self.policy.is_memory_allowed(eff):
             return WatchlistRecord(user_id=eff.user_id)
         stored = self._watchlists.get(eff.user_id)
-        wl = stored.model_copy(deep=True) if stored else WatchlistRecord(user_id=eff.user_id)
-        auth_entities = {e.entity_id: e for e in await self.list_entities(principal=eff, limit=2000)}
+        wl = clone_model(stored) if stored else WatchlistRecord(user_id=eff.user_id)
+        auth_entities = {e.entity_id: e for e in await self.list_entities(principal=eff, limit=None)}
         auth_claims = await self.query_claims(principal=eff, include_superseded=False)
         auth_conflicts = await self.list_conflicts(principal=eff, status="open")
         auth_attachments = await self.list_topic_attachments(principal=eff)
@@ -1427,7 +1482,7 @@ class OkfMarkdownVaultStore:
     async def record_receipt(self, receipt: ContextAssemblyReceipt) -> None:
         await self._ensure_init()
         async with self._lock:
-            self._receipts[receipt.receipt_id] = receipt.model_copy(deep=True)
+            self._receipts[receipt.receipt_id] = clone_model(receipt)
             self._persist_meta_sync()
 
     async def get_receipt(
@@ -1442,7 +1497,7 @@ class OkfMarkdownVaultStore:
             return None
         if rcpt.principal_id != eff.user_id and eff.wall_side != WallSide.above_the_wall:
             return None
-        return rcpt.model_copy(deep=True)
+        return clone_model(rcpt)
 
     async def diff_staleness(self, *, wall_side: str | None = None) -> StalenessReport:
         """Zero-LLM SHA-256 staleness diff reading claim-evidence `.sha256.json` sidecars & knowledge items."""
@@ -1500,53 +1555,53 @@ class OkfMarkdownVaultStore:
     async def export_state(self) -> dict[str, Any]:
         await self._ensure_init()
         return {
-            "epochs": self._epochs.model_copy(deep=True),
-            "entities": [e.model_copy(deep=True) for e in self._entities.values()],
-            "identifiers": [i.model_copy(deep=True) for i in self._identifiers.values()],
-            "lineage_events": [ev.model_copy(deep=True) for ev in self._lineage.values()],
-            "positions": [p.model_copy(deep=True) for p in self._positions.values()],
-            "coverages": [c.model_copy(deep=True) for c in self._coverages.values()],
-            "skill_bindings": [sb.model_copy(deep=True) for sb in self._skill_bindings.values()],
-            "claims": [c.model_copy(deep=True) for c in self._claims.values()],
+            "epochs": clone_model(self._epochs),
+            "entities": [clone_model(e) for e in self._entities.values()],
+            "identifiers": [clone_model(i) for i in self._identifiers.values()],
+            "lineage_events": [clone_model(ev) for ev in self._lineage.values()],
+            "positions": [clone_model(p) for p in self._positions.values()],
+            "coverages": [clone_model(c) for c in self._coverages.values()],
+            "skill_bindings": [clone_model(sb) for sb in self._skill_bindings.values()],
+            "claims": [clone_model(c) for c in self._claims.values()],
             "conflict_sets": [cs.model_copy(deep=True, update={"claims": []}) for cs in self._conflicts.values()],
-            "topics": [t.model_copy(deep=True) for t in self._topics.values()],
-            "topic_attachments": [a.model_copy(deep=True) for a in self._attachments.values()],
-            "knowledge_items": [k.model_copy(deep=True) for k in self._knowledge_items.values()],
-            "curator_patches": [p.model_copy(deep=True) for p in self._curator_patches.values()],
-            "memories": [m.model_copy(deep=True) for m in self._memories.values()],
+            "topics": [clone_model(t) for t in self._topics.values()],
+            "topic_attachments": [clone_model(a) for a in self._attachments.values()],
+            "knowledge_items": [clone_model(k) for k in self._knowledge_items.values()],
+            "curator_patches": [clone_model(p) for p in self._curator_patches.values()],
+            "memories": [clone_model(m) for m in self._memories.values()],
             "watchlists": [w.model_copy(deep=True, update={"alerts": []}) for w in self._watchlists.values()],
             "revoked_principals": [(uid, meta.get("reason", "revoked")) for uid, meta in self._revoked.items()],
-            "receipts": [r.model_copy(deep=True) for r in self._receipts.values()],
+            "receipts": [clone_model(r) for r in self._receipts.values()],
         }
 
     async def import_state(self, state: dict[str, Any], *, reset_epochs: bool = False) -> None:
         await self._ensure_init()
         async with self._lock:
-            self._entities = {e.entity_id: e.model_copy(deep=True) for e in state.get("entities", [])}
+            self._entities = {e.entity_id: clone_model(e) for e in state.get("entities", [])}
             self._key_to_id = {e.canonical_key: e.entity_id for e in self._entities.values()}
-            self._identifiers = {i.id: i.model_copy(deep=True) for i in state.get("identifiers", [])}
-            self._lineage = {ev.event_id: ev.model_copy(deep=True) for ev in state.get("lineage_events", [])}
-            self._positions = {p.position_id: p.model_copy(deep=True) for p in state.get("positions", [])}
-            self._coverages = {c.coverage_id: c.model_copy(deep=True) for c in state.get("coverages", [])}
+            self._identifiers = {i.id: clone_model(i) for i in state.get("identifiers", [])}
+            self._lineage = {ev.event_id: clone_model(ev) for ev in state.get("lineage_events", [])}
+            self._positions = {p.position_id: clone_model(p) for p in state.get("positions", [])}
+            self._coverages = {c.coverage_id: clone_model(c) for c in state.get("coverages", [])}
             self._skill_bindings = {
-                sb.binding_id: sb.model_copy(deep=True) for sb in state.get("skill_bindings", [])
+                sb.binding_id: clone_model(sb) for sb in state.get("skill_bindings", [])
             }
-            self._claims = {c.claim_id: c.model_copy(deep=True) for c in state.get("claims", [])}
+            self._claims = {c.claim_id: clone_model(c) for c in state.get("claims", [])}
             self._conflicts = {
                 cs.conflict_set_id: cs.model_copy(deep=True, update={"claims": []})
                 for cs in state.get("conflict_sets", [])
             }
-            self._topics = {t.topic_id: t.model_copy(deep=True) for t in state.get("topics", [])}
+            self._topics = {t.topic_id: clone_model(t) for t in state.get("topics", [])}
             self._attachments = {
-                a.attachment_id: a.model_copy(deep=True) for a in state.get("topic_attachments", [])
+                a.attachment_id: clone_model(a) for a in state.get("topic_attachments", [])
             }
             self._knowledge_items = {
-                k.item_id: k.model_copy(deep=True) for k in state.get("knowledge_items", [])
+                k.item_id: clone_model(k) for k in state.get("knowledge_items", [])
             }
             self._curator_patches = {
-                p.patch_id: p.model_copy(deep=True) for p in state.get("curator_patches", [])
+                p.patch_id: clone_model(p) for p in state.get("curator_patches", [])
             }
-            self._memories = {m.memory_id: m.model_copy(deep=True) for m in state.get("memories", [])}
+            self._memories = {m.memory_id: clone_model(m) for m in state.get("memories", [])}
             self._watchlists = {
                 w.user_id: w.model_copy(deep=True, update={"alerts": []})
                 for w in state.get("watchlists", [])
@@ -1555,10 +1610,10 @@ class OkfMarkdownVaultStore:
                 uid: {"reason": reason, "actor": "system:import", "revoked_at": format_utc(utc_now()) or ""}
                 for uid, reason in state.get("revoked_principals", [])
             }
-            self._receipts = {r.receipt_id: r.model_copy(deep=True) for r in state.get("receipts", [])}
+            self._receipts = {r.receipt_id: clone_model(r) for r in state.get("receipts", [])}
             epochs: PolicyEpochState | None = state.get("epochs")
             if epochs is not None and not reset_epochs:
-                self._epochs = epochs.model_copy(deep=True)
+                self._epochs = clone_model(epochs)
             elif reset_epochs:
                 self._epochs = PolicyEpochState(
                     data_epoch=1, policy_epoch=1, updated_at=utc_now(), last_reason="seed", last_actor="system:seed"

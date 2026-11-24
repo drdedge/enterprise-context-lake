@@ -103,6 +103,9 @@ class AppRuntimeContext:
             except Exception:
                 pass
         await self.registry.close_all()
+        ledger = getattr(self.registry, "ledger", None)
+        if ledger is not None:
+            ledger.close()
         if self._temp_dir is not None:
             try:
                 self._temp_dir.cleanup()

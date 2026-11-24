@@ -22,6 +22,8 @@ from context_mcp.server import create_codemode_mcp_server, create_primitive_mcp_
 from context_api.bootstrap import AppRuntimeContext, build_runtime_context_sync
 from context_api.routes import router as api_router
 from context_api.tracing_middleware import RequestTracingMiddleware
+from context_api.versioning_routes import AttributionMiddleware
+from context_api.versioning_routes import router as versioning_router
 
 
 def create_app(
@@ -136,6 +138,8 @@ def create_app(
         )
 
     app.include_router(api_router)
+    app.include_router(versioning_router)
+    app.add_middleware(AttributionMiddleware)
 
     # Mount /mcp/codemode BEFORE /mcp so prefix routing resolves unambiguously.
     app.mount("/mcp/codemode", codemode_http)

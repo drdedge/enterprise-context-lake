@@ -1,0 +1,113 @@
+name: CI
+
+# Runs the full offline verification on every pull request and on every push to main.
+# No secrets are needed: Gemini and LangSmith are optional and the lake runs offline.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  web:
+    name: Web UI (typecheck, build, unit tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck and build
+        run: npm run build
+      - name: Unit tests (vitest)
+        run: npm test
+
+  verify:
+    name: Verification oracles 1 to 7 on Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.14 is the minimum (stdlib compression.zstd); 3.15 is what the ADRs were verified on.
+        python: ["3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # Node 24 is needed for the Code Mode --permission sandbox, the Vite dev server and Playwright.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            apps/web/package-lock.json
+            tests/e2e/package-lock.json
+
+      - name: Install Python packages
+        run: python -m pip install -e ".[dev]"
+
+      - name: Install web UI packages
+        working-directory: apps/web
+        run: npm ci --no-audit --no-fund
+
+      - name: Install Playwright and Chromium
+        working-directory: tests/e2e
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      # Runs the LF check, fixture validation and all seven oracles, the same as scripts/verify.py locally.
+      - name: Run scripts/verify.py
+        env:
+          PYTHONUTF8: "1"
+        run: python scripts/verify.py
+
+      # Any test file that verify.py does not list as an oracle (for example tests/test_scale_and_cache.py),
+      # so new suites run in CI without having to edit verify.py first.
+      - name: Run remaining pytest suites
+        env:
+          PYTHONUTF8: "1"
+        run: >
+          python -m pytest -q tests
+          --ignore=tests/e2e
+          --ignore=tests/test_bitemporal_replay.py
+          --ignore=tests/test_security_redteam.py
+          --ignore=tests/test_adapter_conformance.py
+          --ignore=tests/test_domain_workflows.py
+          --ignore=tests/test_knowledge_factory.py
+
+      - name: Upload logs and Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-results-py${{ matrix.python }}
+          path: |
+            data/local/
+            tests/e2e/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
