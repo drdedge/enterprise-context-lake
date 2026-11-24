@@ -11,10 +11,10 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../api/client";
+import { useGraphLayout } from "../graph/useGraphLayout";
 import {
   HOVER_SPOTLIGHT_DEBOUNCE_MS,
   PHI,
-  computeDeterministicLayout,
   computePhiDecaySpotlight,
   computeZoomLod,
   type Point2D,
@@ -357,29 +357,20 @@ export function GraphView({
 
   const lensPins = useMemo(() => allPins[lens] || {}, [allPins, lens]);
 
-  // Deterministic Barnes-Hut + φ-asymmetric compound + Golden-Angle orphan layout
-  const layout = useMemo(
-    () =>
-      computeDeterministicLayout(
-        visibleNodes,
-        visibleEdges,
-        graph?.clusters || [],
-        {
-          lens,
-          spacingScale,
-          clusterCohesion,
-          pinnedPositions: lensPins,
-        },
-      ),
-    [
-      visibleNodes,
-      visibleEdges,
-      graph?.clusters,
-      lens,
-      spacingScale,
-      clusterCohesion,
-      lensPins,
-    ],
+  // Deterministic Barnes-Hut + φ-asymmetric compound + Golden-Angle orphan layout.
+  // Large graphs are laid out in a Web Worker (the previous layout stays on screen meanwhile)
+  // and every result is cached, so switching back to a lens is instant.
+  const graphClusters = useMemo(() => graph?.clusters || [], [graph?.clusters]);
+  const layoutOptions = useMemo(
+    () => ({ lens, spacingScale, clusterCohesion, pinnedPositions: lensPins }),
+    [lens, spacingScale, clusterCohesion, lensPins],
+  );
+  const { layout, pending: layoutPending } = useGraphLayout(
+    visibleNodes,
+    visibleEdges,
+    graphClusters,
+    layoutOptions,
+    loading,
   );
 
   // Fit bounds helper
@@ -436,12 +427,25 @@ export function GraphView({
 
   // Auto-fit cleanly whenever lens or node set changes
   const graphSignature = `${lens}:${visibleNodes.length}:${graph?.data_epoch ?? 0}`;
+  // While a large layout is computing in the worker, the positions are stale; defer the fit until it lands
+  const fitPendingRef = useRef(false);
   useEffect(() => {
     if (visibleNodes.length > 0 && !stickyDirectionActive && !impactTrace) {
-      fitToView();
+      if (layoutPending) {
+        fitPendingRef.current = true;
+      } else {
+        fitToView();
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graphSignature, viewportSize.width, viewportSize.height]);
+  useEffect(() => {
+    if (!layoutPending && fitPendingRef.current) {
+      fitPendingRef.current = false;
+      if (!stickyDirectionActive && !impactTrace) fitToView();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutPending, fitToView]);
 
   // Trigger Impact BFS
   const runImpactBfs = async (nodeId: string) => {
@@ -1956,6 +1960,7 @@ export function GraphView({
               </span>
               <span className="text-[#94949E]">LOD:{lod}</span>
               {loading && <span>syncing…</span>}
+              {layoutPending && <span data-testid="graph-layout-pending">laying out…</span>}
             </div>
           )}
         </div>

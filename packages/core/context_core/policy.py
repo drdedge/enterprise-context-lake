@@ -22,6 +22,7 @@ from context_core.exceptions import (
     ValidationError,
 )
 from context_core.models import (
+    clone_model,
     REDACTED_EVIDENCE_LABEL,
     ActorMode,
     ChannelMode,
@@ -198,7 +199,7 @@ class PolicyEngine:
         """Return caller-safe deep copy of claim with server-side evidence redaction, or None if unauthorized."""
         if not self.can_read_claim(principal, claim):
             return None
-        sanitized = claim.model_copy(deep=True)
+        sanitized = clone_model(claim)
         if self.can_read_evidence(principal, claim):
             sanitized.evidence_redacted = False
             sanitized.evidence_redaction_label = None
@@ -224,7 +225,7 @@ class PolicyEngine:
             principal, wall_side=event.wall_side, read_acl_groups=event.read_acl_groups
         ):
             return None
-        sanitized = event.model_copy(deep=True)
+        sanitized = clone_model(event)
         ev_groups = event.evidence_acl_groups
         if ev_groups and not principal.groups.intersection(ev_groups):
             sanitized.evidence_uri = None
