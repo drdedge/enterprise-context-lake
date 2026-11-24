@@ -14,6 +14,7 @@ from context_core.exceptions import (
     AuthorizationError,
     NotFoundError,
     OptimisticConcurrencyError,
+    PendingApprovalError,
     ValidationError,
 )
 from context_core.models import (
@@ -25,6 +26,7 @@ from context_core.models import (
     MemoryUpsertInput,
     Principal,
     Topic,
+    TopicPatchInput,
     WatchlistUpdateInput,
 )
 from context_core.policy import PolicyEngine, wall_allows
@@ -229,6 +231,19 @@ class ChangeSetService:
                 before_v = before_v.model_copy(update={"payload": before_payload}) if before_v else None
             else:
                 raise ValidationError(f"Unsupported op {op} for claims")
+        elif rt == "topic" and op == "patch":
+            # Rename, nest, merge or archive: applied through update_topic, which also keeps the
+            # parent/child links of neighbouring topics consistent.
+            record_id = record_id or payload.get("topic_id")
+            payload.pop("topic_id", None)
+            if not record_id:
+                raise ValidationError("topic patch needs record_id")
+            fields = TopicPatchInput.model_validate(payload).model_dump(mode="json", exclude_none=True)
+            before_v = self.ledger.latest_version("topic", record_id)
+            if before_v is None or before_v.payload is None:
+                raise NotFoundError(f"Topic not found: {record_id}")
+            after = Topic.model_validate({**before_v.payload, **fields}).model_dump(mode="json")
+            payload = {"topic_id": record_id, **fields}
         elif rt in ("entity", "knowledge_item", "topic"):
             model = {"entity": Entity, "knowledge_item": KnowledgeItem, "topic": Topic}[rt]
             key = {"entity": "entity_id", "knowledge_item": "item_id", "topic": "topic_id"}[rt]
@@ -345,6 +360,44 @@ class ChangeSetService:
         run_id: str | None = None,
         reverts_change_id: str | None = None,
     ) -> ChangeSet:
+        cs = await self._build(
+            title=title, items=items, principal=principal, reason=reason, kind=kind, source=source,
+            agent_id=agent_id, run_id=run_id, reverts_change_id=reverts_change_id,
+        )
+        self.ledger.save_change_set(cs)
+        if cs.approval == "auto":
+            cs = await self._merge(cs, merger=principal)
+        return cs
+
+    async def gate_direct_write(self, *, title: str, items: list[ChangeItemInput], principal: Principal) -> None:
+        """Check a write from an existing endpoint (REST, MCP, agents) against the approval rules.
+
+        Returns quietly when the rules auto-approve it, and the caller writes straight through as before
+        (still recorded in history). Otherwise the edit is filed as a proposed change set and
+        PendingApprovalError is raised, which the API returns as 202 with the change set.
+        """
+        cs = await self._build(title=title, items=items, principal=principal)
+        if cs.approval == "auto":
+            return
+        self.ledger.save_change_set(cs)
+        raise PendingApprovalError(
+            f"This change needs approval ({', '.join(cs.rule_ids)}). It was filed as change set {cs.change_id}.",
+            change_set=self.view(cs, principal),
+        )
+
+    async def _build(
+        self,
+        *,
+        title: str,
+        items: list[ChangeItemInput],
+        principal: Principal,
+        reason: str = "",
+        kind: str = "change",
+        source: str | None = None,
+        agent_id: str | None = None,
+        run_id: str | None = None,
+        reverts_change_id: str | None = None,
+    ) -> ChangeSet:
         if principal.revoked:
             raise AuthorizationError("Revoked principal cannot propose changes")
         if not items:
@@ -377,9 +430,6 @@ class ChangeSetService:
             items=prepared,
             reverts_change_id=reverts_change_id,
         )
-        self.ledger.save_change_set(cs)
-        if decision.approval == "auto":
-            cs = await self._merge(cs, merger=principal)
         return cs
 
     def get(self, change_id: str, principal: Principal) -> ChangeSet:
@@ -457,6 +507,9 @@ class ChangeSetService:
             await store.upsert_entity(Entity.model_validate({**p, "updated_at": ts()}))
         elif rt == "knowledge_item":
             await store.upsert_knowledge_item(KnowledgeItem.model_validate({**p, "recorded_at": ts()}))
+        elif rt == "topic" and op == "patch":
+            body = {k: v for k, v in p.items() if k != "topic_id"}
+            await store.update_topic(item.record_id, TopicPatchInput.model_validate(body), principal=applier)
         elif rt == "topic":
             await store.upsert_topic(Topic.model_validate(p))
         elif rt == "claim" and op == "claim_create":

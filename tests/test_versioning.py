@@ -237,11 +237,77 @@ async def test_personal_memory_history_is_owner_only(api_client: Any) -> None:
 async def test_direct_writes_are_attributed(api_client: Any) -> None:
     r = await api_client.patch(
         "/api/v1/topics/topic:nav-valuation", json={"alt_labels": ["NAV"]},
-        headers=H(STEWARD, **{"X-Change-Source": "harness", "X-Agent-Id": "claude-code"}),
+        headers=H(STEWARD, **{"X-Change-Source": "api", "X-Run-Id": "run-42"}),
     )
     assert r.status_code == 200, r.text
     hist = (await _history(api_client, ANALYST, "topic", "topic:nav-valuation")).json()
     head = hist["versions"][0]
-    assert head["source"] == "harness" and head["agent_id"] == "claude-code" and head["author_id"] == STEWARD
+    assert head["source"] == "api" and head["run_id"] == "run-42" and head["author_id"] == STEWARD
     listed = (await api_client.get("/api/v1/change-sets", params={"include_direct": "true"}, headers=H(STEWARD))).json()
     assert any(c["change_id"] == head["change_id"] for c in listed["change_sets"])
+
+
+AGENT = {"X-Change-Source": "agent", "X-Agent-Id": "curator-bot", "X-Run-Id": "run-7"}
+
+
+def _signoff(status: str, value: str) -> dict[str, Any]:
+    return {
+        "subject_canonical_key": "veh:alpha-credit-master-lp",
+        "predicate": "official_nav_audit_signoff",
+        "object_value": value,
+        "context_purpose": "legal_vehicle",
+        "scope_type": "firm",
+        "scope_id": "firm",
+        "channel": "fact",
+        "epistemic_status": status,
+        "source_system": "admin-feed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_existing_topic_endpoint_files_agent_edit_as_proposal(api_client: Any) -> None:
+    r = await api_client.patch(
+        "/api/v1/topics/topic:nav-valuation", json={"alt_labels": ["NAV"]},
+        headers=H(STEWARD, **{"X-Change-Source": "harness", "X-Agent-Id": "claude-code"}),
+    )
+    assert r.status_code == 202, r.text
+    cs = r.json()["pending_approval"]
+    assert cs["status"] == "proposed" and cs["rule_ids"] == ["agent-privileged"] and cs["source"] == "harness"
+    assert cs["items"][0]["op"] == "patch" and cs["items"][0]["redline"] is not None
+    # Nothing written yet
+    topics = (await api_client.get("/api/v1/topics", headers=H(STEWARD))).json()["topics"]
+    assert next(t for t in topics if t["topic_id"] == "topic:nav-valuation")["alt_labels"] != ["NAV"]
+    # Another steward merges it; it lands through update_topic and is filed under the change set
+    r = await api_client.post(f"/api/v1/change-sets/{cs['change_id']}/approve", json={}, headers=H(DIRECTOR))
+    assert r.status_code == 200, r.text
+    assert r.json()["change_set"]["status"] == "merged"
+    topics = (await api_client.get("/api/v1/topics", headers=H(STEWARD))).json()["topics"]
+    assert next(t for t in topics if t["topic_id"] == "topic:nav-valuation")["alt_labels"] == ["NAV"]
+    head = (await _history(api_client, ANALYST, "topic", "topic:nav-valuation")).json()["versions"][0]
+    assert head["change_id"] == cs["change_id"] and head["agent_id"] == "claude-code"
+
+
+@pytest.mark.asyncio
+async def test_existing_claim_endpoint_gates_agent_fact_but_not_steward(api_client: Any) -> None:
+    # An agent acting for a steward: a low-risk observation goes straight in...
+    r = await api_client.post("/api/v1/claims", json=_signoff("unverified_observation", "SIGNOFF-AGENT-NOTE"), headers=H(STEWARD, **AGENT))
+    assert r.status_code in (200, 201), r.text
+    # ...but an approved fact waits for a steward
+    r = await api_client.post("/api/v1/claims", json=_signoff("approved_fact", "SIGNOFF-AGENT"), headers=H(STEWARD, **AGENT))
+    assert r.status_code == 202, r.text
+    cs = r.json()["pending_approval"]
+    assert cs["agent_id"] == "curator-bot" and cs["run_id"] == "run-7" and cs["approval"] == "review"
+    r = await api_client.post(f"/api/v1/change-sets/{cs['change_id']}/approve", json={}, headers=H(DIRECTOR))
+    assert r.status_code == 200 and r.json()["change_set"]["status"] == "merged", r.text
+    # The same write made by the steward in the UI is auto-approved, as before
+    r = await api_client.post("/api/v1/claims", json=_signoff("approved_fact", "SIGNOFF-UI"), headers=H(STEWARD, **{"X-Change-Source": "ui"}))
+    assert r.status_code in (200, 201), r.text
+
+
+@pytest.mark.asyncio
+async def test_existing_claim_endpoint_still_refuses_unauthorised_writes(api_client: Any) -> None:
+    # Not parked as a proposal: a write the caller may not make is still refused outright
+    r = await api_client.post("/api/v1/claims", json=_signoff("approved_fact", "SIGNOFF-ANALYST"), headers=H(ANALYST, **AGENT))
+    assert r.status_code == 403, r.text
+    listed = (await api_client.get("/api/v1/change-sets", params={"status": "proposed"}, headers=H(STEWARD))).json()
+    assert not any(c["author_id"] == ANALYST for c in listed["change_sets"])

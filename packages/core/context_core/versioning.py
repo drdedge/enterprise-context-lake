@@ -32,7 +32,7 @@ from context_core.policy import PolicyEngine, wall_allows
 
 RecordType = Literal["entity", "knowledge_item", "topic", "claim", "memory", "watchlist"]
 RECORD_TYPES: tuple[str, ...] = ("entity", "knowledge_item", "topic", "claim", "memory", "watchlist")
-ChangeOp = Literal["upsert", "delete", "claim_create", "claim_update"]
+ChangeOp = Literal["upsert", "delete", "claim_create", "claim_update", "patch"]
 ChangeSource = Literal["ui", "api", "harness", "agent", "upload", "import", "system"]
 ChangeStatus = Literal["proposed", "merged", "rejected", "conflict", "failed"]
 VersionOp = Literal["baseline", "create", "update", "delete", "import"]

@@ -71,6 +71,9 @@ def create_default_registry(
     )
     registry.ledger = ledger  # type: ignore[attr-defined]
     registry.versions = ChangeSetService(get_store=lambda: registry.store, ledger=ledger, policy=pol)  # type: ignore[attr-defined]
+    # Existing write endpoints go through the approval rules too (auto writes straight through).
+    for vs in (sqlite_store, okf_store):
+        vs.set_gate(registry.versions.gate_direct_write)  # type: ignore[attr-defined]
     return registry
 
 

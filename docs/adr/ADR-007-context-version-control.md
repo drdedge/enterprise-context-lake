@@ -37,6 +37,14 @@ Context reaches the lake in four ways: uploads, harnesses using the MCP server o
 - **Attribution** comes from the request's principal, plus the `X-Change-Source`, `X-Agent-Id` and `X-Run-Id` headers when present.
 - **Claims** are keyed by "slot": `(subject, predicate, context_purpose, scope_type, scope_id)`. A slot is the piece of context that successive claims rewrite.
 
+### Existing endpoints go through the rules
+
+The claim and topic endpoints that already existed (`POST /api/v1/claims`, claim updates and supersedes, `POST`/`PATCH /api/v1/topics`, uploads, and the HTTP MCP and agent paths that call the same store methods) are checked against the approval rules before they write:
+
+- **Auto-approved** writes go straight through, as before, and are recorded in history.
+- **Writes that need review** are filed as a proposed change set, and the endpoint returns `202` with `{"pending_approval": {...change set...}}`. Over MCP the tool gets a `pending_approval` error naming the change set.
+- **Writes the caller may not make at all** are still refused with `403`, not parked as proposals. Use `POST /api/v1/change-sets` to propose an edit you can't make yourself.
+
 ### Information barrier
 
 The barrier is enforced in the application layer, on every version, diff, change set and release listing:
@@ -69,7 +77,7 @@ Temporal tables were rejected. The service account has `db_ddladmin` but not `CO
 - **Merges aren't atomic across stores.** A merge applies each item through the store and records versions in the ledger afterwards. If an item fails part-way, the change set is marked `failed`, and the items already applied stay applied and visible in history.
 - **Claim slots can hold several live claims** (an open conflict, or different valid-time windows). Slot history is a timeline of events, and revert works on the latest event.
 - **Undoing the creation of a note isn't supported.** Notes have no archived status yet. Entities and topics are archived on revert.
-- **Direct write paths bypass review.** The existing claim, topic, memory and watchlist endpoints still write directly, and are recorded as implicit change sets. They should move onto change sets once the rules are agreed.
+- **Some write paths are not gated.** Memory and watchlist edits are personal and always auto-approved. Inbox approve/reject and conflict resolution are already steward decisions, so they write directly. Bulk imports, seeding and the stdio MCP server (no request attribution) are recorded but not gated.
 - **Publishing is linear.** Moving `production` publishes everything merged before that release. A bad change is reverted, not skipped.
 
 ## API

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from context_core.models import (
     Claim,
@@ -33,6 +33,7 @@ from context_core.models import (
 )
 from context_core.versioning import (
     ChangeItem,
+    ChangeItemInput,
     ChangeSet,
     VersionRecord,
     active_change,
@@ -51,6 +52,10 @@ from context_adapters.version_ledger import SqliteVersionLedger
 current_actor: ContextVar[Principal | None] = ContextVar("vc_current_actor", default=None)
 
 
+# gate(title=..., items=..., principal=...) returns when auto-approved, or raises PendingApprovalError
+DirectWriteGate = Callable[..., Awaitable[None]]
+
+
 def new_change_id() -> str:
     return f"cs-{uuid.uuid4().hex[:12]}"
 
@@ -61,6 +66,11 @@ class VersionedStore:
     def __init__(self, inner: Any, ledger: SqliteVersionLedger) -> None:
         self._inner = inner
         self._ledger = ledger
+        self._gate: DirectWriteGate | None = None
+
+    def set_gate(self, gate: "DirectWriteGate | None") -> None:
+        """Route direct writes through the approval rules (ChangeSetService.gate_direct_write)."""
+        self._gate = gate
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -195,6 +205,34 @@ class VersionedStore:
         return raw or claim
 
     # ------------------------------------------------------------------
+    # Approval gate for direct writes
+    # ------------------------------------------------------------------
+
+    def _gated(self) -> bool:
+        """Gate only writes made inside an API/MCP request, and never the writes of a merge itself."""
+        return self._gate is not None and current_attribution.get() is not None and active_change.get() is None
+
+    async def _effective(self, principal: Principal) -> Principal:
+        resolver = getattr(self._inner, "_effective_principal", None)
+        return await resolver(principal) if resolver is not None else principal
+
+    async def _authorize_claim(self, principal: Principal, *, subject: str, scope_type: str, status: str,
+                               force_supersede: bool, is_mandatory: bool) -> None:
+        """Run the store's own write check first, so a write the caller may not make still fails (403)
+        rather than being parked as a proposal."""
+        getter = getattr(self._inner, "get_entity_raw", None)
+        policy = getattr(self._inner, "policy", None)
+        if getter is None or policy is None:
+            return
+        target = await getter(subject)
+        if target is None:
+            return  # the store raises its own NotFoundError
+        policy.authorize_write(
+            await self._effective(principal), target_entity=target, scope_type=scope_type,
+            epistemic_status=status, force_supersede=force_supersede, is_mandatory=is_mandatory,
+        )
+
+    # ------------------------------------------------------------------
     # Wrapped writes
     # ------------------------------------------------------------------
 
@@ -209,11 +247,26 @@ class VersionedStore:
         return result
 
     async def upsert_topic(self, topic: Topic) -> Topic:
+        actor = current_actor.get()
+        if self._gated() and actor is not None:
+            assert self._gate is not None
+            await self._gate(
+                title=f"Topic: {topic.pref_label}",
+                items=[ChangeItemInput(record_type="topic", op="upsert", record_id=topic.topic_id, payload=topic.model_dump(mode="json"))],
+                principal=actor,
+            )
         result = await self._inner.upsert_topic(topic)
         self._record_topic(result)
         return result
 
     async def update_topic(self, topic_id: str, patch: TopicPatchInput, *, principal: Principal) -> Topic:
+        if self._gated():
+            assert self._gate is not None
+            await self._gate(
+                title=f"Edit topic {topic_id}",
+                items=[ChangeItemInput(record_type="topic", op="patch", record_id=topic_id, payload=patch.model_dump(mode="json", exclude_none=True))],
+                principal=principal,
+            )
         result = await self._inner.update_topic(topic_id, patch, principal=principal)
         self._record_topic(result, author=principal)
         return result
@@ -224,6 +277,18 @@ class VersionedStore:
         return result
 
     async def write_claim(self, payload: ClaimCreateInput, *, principal: Principal) -> ClaimWriteResult:
+        if self._gated():
+            assert self._gate is not None
+            await self._authorize_claim(
+                principal, subject=payload.subject_id or payload.subject_canonical_key or "",
+                scope_type=payload.scope_type, status=payload.epistemic_status,
+                force_supersede=payload.force_supersede, is_mandatory=payload.is_mandatory,
+            )
+            await self._gate(
+                title=f"New claim: {payload.predicate}",
+                items=[ChangeItemInput(record_type="claim", op="claim_create", payload=payload.model_dump(mode="json", exclude={"expected_data_epoch"}))],
+                principal=principal,
+            )
         result = await self._inner.write_claim(payload, principal=principal)
         self._record_claim(await self._raw_claim(result.claim), author=principal)
         return result
@@ -231,6 +296,23 @@ class VersionedStore:
     async def update_claim(
         self, claim_id: str, patch: ClaimUpdateInput, *, principal: Principal
     ) -> ClaimWriteResult:
+        if self._gated():
+            assert self._gate is not None
+            existing = await self._inner.get_claim_raw(claim_id) if hasattr(self._inner, "get_claim_raw") else None
+            policy = getattr(self._inner, "policy", None)
+            if existing is not None and policy is not None and policy.can_read_claim(await self._effective(principal), existing):
+                await self._authorize_claim(
+                    principal, subject=existing.subject_id, scope_type=existing.scope_type,
+                    status=patch.epistemic_status or existing.epistemic_status,
+                    force_supersede=patch.force_supersede,
+                    is_mandatory=patch.is_mandatory if patch.is_mandatory is not None else existing.is_mandatory,
+                )
+                await self._gate(
+                    title=f"Edit claim: {existing.predicate}",
+                    items=[ChangeItemInput(record_type="claim", op="claim_update", record_id=claim_id,
+                                           payload={"claim_id": claim_id, **patch.model_dump(mode="json", exclude_none=True, exclude={"expected_data_epoch"})})],
+                    principal=principal,
+                )
         result = await self._inner.update_claim(claim_id, patch, principal=principal)
         self._record_claim(await self._raw_claim(result.claim), author=principal, op="update")
         return result
