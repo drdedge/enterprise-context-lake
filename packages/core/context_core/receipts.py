@@ -16,6 +16,7 @@ from context_core.models import (
     PolicyEpochState,
     Principal,
 )
+from context_core.tracing import record_receipt
 
 
 def compute_receipt_sha256(receipt: ContextAssemblyReceipt) -> str:
@@ -107,7 +108,9 @@ def build_receipt(
         tool_or_endpoint=tool_or_endpoint,
         receipt_sha256="",
     )
-    return receipt.model_copy(update={"receipt_sha256": compute_receipt_sha256(receipt)})
+    sealed = receipt.model_copy(update={"receipt_sha256": compute_receipt_sha256(receipt)})
+    record_receipt(sealed)
+    return sealed
 
 
 def verify_receipt(receipt: ContextAssemblyReceipt) -> bool:

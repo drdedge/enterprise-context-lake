@@ -10,6 +10,7 @@ from context_core.exceptions import AuthenticationError
 from context_core.models import ActorMode, ChannelMode, Principal
 from context_core.policy import EntraAuthVerifier, PrincipalDirectory
 from context_core.ports import StorePort
+from context_core.tracing import mark_trace_principal
 
 
 def _ci_header(headers: Mapping[str, str], *names: str) -> str | None:
@@ -136,4 +137,5 @@ class AuthService:
         if principal.revoked or await store.is_principal_revoked(principal.user_id):
             raise AuthenticationError("Principal account has been revoked")
 
+        mark_trace_principal(principal)
         return principal

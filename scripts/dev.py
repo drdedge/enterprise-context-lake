@@ -345,6 +345,8 @@ def build_backend_env(
         env.pop("GEMINI_API_KEY", None)
         env.pop("GOOGLE_API_KEY", None)
         env.pop("LANGSMITH_API_KEY", None)
+        env.pop("CONTEXT_TRACING_LANGSMITH", None)
+        env.pop("CONTEXT_TRACING_INTERNAL_OTLP_ENDPOINT", None)
         env["LANGSMITH_TRACING"] = "false"
     if db_path is not None:
         env["CONTEXT_LAKE_DB"] = str(db_path)

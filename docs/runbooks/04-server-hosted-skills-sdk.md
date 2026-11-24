@@ -73,7 +73,7 @@ client.close()
 
 ## 3. External Observability (LangSmith / External Arize Phoenix)
 
-This repository intentionally omits bundled Arize Phoenix exporters. Instead, every SDK lookup and API/MCP read emits an immutable, SHA-256-sealed `ContextAssemblyReceipt`. Log these exact attributes on external OpenTelemetry, LangSmith, or Arize Phoenix spans for bit-for-bit reproducible audit trails:
+Every SDK lookup and API/MCP read emits an immutable, SHA-256-sealed `ContextAssemblyReceipt`. When a span is recording, `build_receipt` writes these attributes onto it automatically, and mirrors each as `langsmith.metadata.context_<name>` so LangSmith shows them as filterable run metadata. Tracing, routing and masking are described in [ADR-006](../adr/ADR-006-wall-aware-tracing-and-langsmith.md): only public-side traces are exported to LangSmith, and private-side traces stay on the internal collector. Receipt attributes:
 
 - `context.receipt_id` (`receipt.receipt_id`)
 - `context.receipt_sha256` (`receipt.receipt_sha256`)
