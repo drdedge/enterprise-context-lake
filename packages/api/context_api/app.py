@@ -16,10 +16,12 @@ from fastapi.staticfiles import StaticFiles
 from context_core.exceptions import ContextLakeError
 from context_core.models import ActorMode, ChannelMode
 from context_core.registry import LlmMode
+from context_core.tracing import configure_langsmith_sdk_defaults, configure_tracing
 from context_mcp.server import create_codemode_mcp_server, create_primitive_mcp_server
 
 from context_api.bootstrap import AppRuntimeContext, build_runtime_context_sync
 from context_api.routes import router as api_router
+from context_api.tracing_middleware import RequestTracingMiddleware
 
 
 def create_app(
@@ -152,6 +154,11 @@ def create_app(
             except ContextLakeError as exc:
                 return JSONResponse(status_code=exc.status_code, content=exc.to_error_dict())
         return await call_next(request)
+
+    # Outermost middleware: one root span per request, routed by wall side (ADR-006).
+    configure_langsmith_sdk_defaults()
+    configure_tracing()
+    app.add_middleware(RequestTracingMiddleware)
 
     # Optionally serve built frontend (`apps/web/dist`) if present
     dist_dir = ctx.repo_root / "apps" / "web" / "dist"

@@ -18,6 +18,7 @@ from context_core.models import (
 )
 from context_core.policy import wall_allows
 from context_core.ports import PolicyPort, StalenessCheckable, StorePort
+from context_core.tracing import mark_trace_wall_side, traced
 
 
 def _is_steward(principal: Principal) -> bool:
@@ -193,6 +194,17 @@ class BackgroundCurator:
         wall_side: WallSide | str | None = None,
     ) -> tuple[StalenessReport, list[CuratorDraftPatch]]:
         """Execute Stage 1 (zero-LLM SHA pre-pass) + Stage 2 (wall-isolated draft patch synthesis)."""
+        with traced("curator.run", principal=principal):
+            # A run across every wall (wall_side=None) touches private-side items, so it never exports.
+            mark_trace_wall_side(wall_side if wall_side is not None else "all_walls")
+            return await self._run_untraced(principal=principal, wall_side=wall_side)
+
+    async def _run_untraced(
+        self,
+        *,
+        principal: Principal,
+        wall_side: WallSide | str | None = None,
+    ) -> tuple[StalenessReport, list[CuratorDraftPatch]]:
         if not _is_steward(principal):
             raise AuthorizationError("Steward authorization required to run background curator")
 

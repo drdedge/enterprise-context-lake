@@ -38,7 +38,14 @@ def enforce_offline_env() -> None:
     os.environ["LLM_MODE"] = "deterministic"
     os.environ["CONTEXT_LAKE_OFFLINE"] = "1"
     os.environ["LANGSMITH_TRACING"] = "false"
-    for secret_key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "LANGSMITH_API_KEY"):
+    for secret_key in (
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "LANGSMITH_API_KEY",
+        "CONTEXT_TRACING_LANGSMITH",
+        "CONTEXT_TRACING_INTERNAL_OTLP_ENDPOINT",
+        "CONTEXT_TRACE_CONTENT",
+    ):
         os.environ.pop(secret_key, None)
 
 

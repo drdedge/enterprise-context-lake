@@ -102,9 +102,17 @@ GEMINI_API_KEY=your-gemini-api-key
 # GOOGLE_API_KEY is also recognized
 GEMINI_MODEL=gemini-2.5-flash
 
-# Optional LangSmith tracing (tags spans with receipt_id, snapshot_version, as_of, policy_epoch)
+# Optional LangSmith export of OpenTelemetry traces (ADR-006).
+# Only public-side traces are sent; private-side, above-the-wall and unmarked traces never leave.
+# Prompt and response content is stripped unless CONTEXT_TRACE_CONTENT=true.
 LANGSMITH_API_KEY=your-langsmith-api-key
+LANGSMITH_PROJECT=enterprise-context-lake
+CONTEXT_TRACING_LANGSMITH=true
+# LangChain callback tracing of public-side model calls (inputs/outputs hidden by default)
 LANGSMITH_TRACING=true
+
+# Optional internal OTLP collector that receives every trace, unfiltered. Firm-run infrastructure only.
+CONTEXT_TRACING_INTERNAL_OTLP_ENDPOINT=http://otel-collector.internal:4318/v1/traces
 ```
 
 ## Runtime Adapter Swapping
@@ -134,6 +142,7 @@ Supported adapter values:
 - [ADR-003: Security, MNPI Walls, Split Claim/Evidence ACLs, Identity & Receipts](docs/adr/ADR-003-security-mnpi-acls-and-identity.md)
 - [ADR-004: Dual FastMCP Surface, Server-Side Code Mode & DeepAgents Harness](docs/adr/ADR-004-dual-mcp-codemode-and-agents.md)
 - [ADR-005: Minimalist Obsidian UX, Diagnostic Graph & Shared `/api/v1` Contract](docs/adr/ADR-005-minimalist-ux-and-diagnostic-graph.md)
+- [ADR-006: Wall-Aware OpenTelemetry Tracing & LangSmith Export](docs/adr/ADR-006-wall-aware-tracing-and-langsmith.md)
 
 ### Operational Runbooks
 - [01 — Claude Code MCP Integration](docs/runbooks/01-claude-code-mcp.md)
