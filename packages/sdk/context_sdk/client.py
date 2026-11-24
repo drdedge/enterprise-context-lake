@@ -60,7 +60,7 @@ class LookupResult(BaseModel):
 def _row_to_entity(row: sqlite3.Row) -> Entity:
     return Entity(
         entity_id=row["entity_id"],
-        entity_type=EntityType(row["entity_type"]),
+        entity_type=row["entity_type"],
         canonical_key=row["canonical_key"],
         display_name=row["display_name"],
         aliases=json.loads(row["aliases_json"]),

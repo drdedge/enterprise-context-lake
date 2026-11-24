@@ -163,6 +163,8 @@ Each entity has a wiki-style page built on request from the claims you may read,
 - [ADR-004: Dual FastMCP Surface, Server-Side Code Mode & DeepAgents Harness](docs/adr/ADR-004-dual-mcp-codemode-and-agents.md)
 - [ADR-005: Minimalist Obsidian UX, Diagnostic Graph & Shared `/api/v1` Contract](docs/adr/ADR-005-minimalist-ux-and-diagnostic-graph.md)
 - [ADR-006: Wall-Aware OpenTelemetry Tracing & LangSmith Export](docs/adr/ADR-006-wall-aware-tracing-and-langsmith.md)
+- [ADR-007: Git-like Version Control for Context](docs/adr/ADR-007-context-version-control.md)
+- [ADR-008: Editable Taxonomy and Access Checks in the Query](docs/adr/ADR-008-editable-taxonomy-and-acl-sets.md)
 - [ADR-009: Entity Pages Built from Claims](docs/adr/ADR-009-entity-pages.md)
 
 ### Operational Runbooks

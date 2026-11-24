@@ -24,6 +24,7 @@ from context_api.routes import router as api_router
 from context_api.tracing_middleware import RequestTracingMiddleware
 from context_api.versioning_routes import AttributionMiddleware
 from context_api.versioning_routes import router as versioning_router
+from context_api.vocabulary_routes import router as vocabulary_router
 from context_api.context_hub_routes import router as context_hub_router
 from context_api.wiki_routes import router as wiki_router
 
@@ -141,6 +142,7 @@ def create_app(
 
     app.include_router(api_router)
     app.include_router(versioning_router)
+    app.include_router(vocabulary_router)
     app.include_router(context_hub_router)
     app.include_router(wiki_router)
     app.add_middleware(AttributionMiddleware)

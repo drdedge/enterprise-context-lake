@@ -66,6 +66,8 @@ from context_core.models import (
     WatchlistUpdateInput,
 )
 from context_core.policy import PolicyEngine, sanitize_uri_secrets, wall_allows
+from context_adapters._vocab_common import VocabularyStoreMixin
+from context_core.vocabulary import VocabTerm, default_terms
 from context_adapters._store_common import (
     apply_topic_patch,
     check_toctou_epoch,
@@ -123,7 +125,7 @@ def _render_okf_markdown(frontmatter: dict[str, Any], body: str) -> str:
     return f"---\n{yaml_text}\n---\n\n{body_lf}\n"
 
 
-class OkfMarkdownVaultStore:
+class OkfMarkdownVaultStore(VocabularyStoreMixin):
     """OKF v0.2 Markdown vault implementing the exact same StorePort contract as SqliteBitemporalStore."""
 
     def __init__(
@@ -158,6 +160,8 @@ class OkfMarkdownVaultStore:
         self._memories: dict[str, MemoryRecord] = {}
         self._watchlists: dict[str, WatchlistRecord] = {}
         self._receipts: dict[str, ContextAssemblyReceipt] = {}
+        self._vocab: dict[str, VocabTerm] = {}
+        self._new_vocab_terms: list[VocabTerm] = []
 
     @property
     def meta_dir(self) -> Path:
@@ -187,6 +191,8 @@ class OkfMarkdownVaultStore:
             self.meta_dir.mkdir(parents=True, exist_ok=True)
             self.claims_sidecar_dir.mkdir(parents=True, exist_ok=True)
             self._load_from_disk_sync()
+            if not self._vocab:
+                self._vocab = {t.term_id: t for t in default_terms()}
             self._initialized = True
 
     async def close(self) -> None:
@@ -242,7 +248,7 @@ class OkfMarkdownVaultStore:
             "okf_version": "0.2",
             "id": entity.canonical_key,
             "entity_id": entity.entity_id,
-            "entity_type": entity.entity_type.value,
+            "entity_type": entity.entity_type,
             "display_name": entity.display_name,
             "aliases": list(entity.aliases),
             "wall_side": entity.wall_side.value,
@@ -375,6 +381,7 @@ class OkfMarkdownVaultStore:
                 for w in self._watchlists.values()
             ],
             "receipts": [r.model_dump(mode="json") for r in self._receipts.values()],
+            "vocab_terms": [t.model_dump(mode="json") for t in self._vocab.values()],
         }
         atomic_write_text(self.meta_dir / "state.json", json.dumps(snapshot, indent=2, sort_keys=True) + "\n")
 
@@ -431,6 +438,7 @@ class OkfMarkdownVaultStore:
             r["receipt_id"]: ContextAssemblyReceipt.model_validate(r)
             for r in raw.get("receipts", [])
         }
+        self._vocab = {t.term_id: t for t in (VocabTerm.model_validate(v) for v in raw.get("vocab_terms", []))}
 
     def _bump_data_epoch(self, reason: str, actor: str) -> int:
         self._epochs = PolicyEpochState(
@@ -445,6 +453,33 @@ class OkfMarkdownVaultStore:
     # ------------------------------------------------------------------
     # Epochs & Revocation
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Vocabulary storage primitives (ADR-008): terms live in _meta/state.json
+    # ------------------------------------------------------------------
+
+    async def _vocab_load(self) -> list[VocabTerm]:
+        await self._ensure_init()
+        return [clone_model(t) for t in self._vocab.values()]
+
+    async def _vocab_count(self) -> int:
+        await self._ensure_init()
+        return len(self._vocab)
+
+    async def _vocab_save(self, terms: Sequence[VocabTerm]) -> None:
+        if not terms:
+            return
+        await self._ensure_init()
+        async with self._lock:
+            for t in terms:
+                self._vocab[t.term_id] = clone_model(t)
+            self._persist_meta_sync()
+
+    async def _vocab_replace_all(self, terms: Sequence[VocabTerm]) -> None:
+        await self._ensure_init()
+        async with self._lock:
+            self._vocab = {t.term_id: clone_model(t) for t in terms}
+            self._persist_meta_sync()
 
     async def get_epochs(self) -> PolicyEpochState:
         await self._ensure_init()
@@ -504,6 +539,7 @@ class OkfMarkdownVaultStore:
             self._bump_data_epoch(f"upsert_entity:{entity.entity_id}", "system")
             self.materialize_indices()
             self._persist_meta_sync()
+        await self._register_record_terms("entities", entity)
         return entity
 
     async def get_entity(self, entity_id_or_key: str, *, principal: Principal) -> Entity | None:
@@ -527,11 +563,12 @@ class OkfMarkdownVaultStore:
         eff = await self._effective_principal(principal)
         if eff.revoked:
             return []
-        type_set = set(entity_types) if entity_types else None
+        # A broad type also returns its narrower types (party -> organisation -> issuer ...)
+        type_set = await self.expand_entity_types(entity_types)
         authorized = [
             clone_model(e)
             for e in sorted(self._entities.values(), key=lambda x: x.canonical_key)
-            if (type_set is None or e.entity_type.value in type_set)
+            if (type_set is None or e.entity_type in type_set)
             and self.policy.can_read_entity(eff, e)
         ]
         if topic_slug:
@@ -576,6 +613,7 @@ class OkfMarkdownVaultStore:
         async with self._lock:
             self._identifiers[ident.id] = clone_model(ident)
             self._persist_meta_sync()
+        await self._register_record_terms("identifiers", ident)
         return ident
 
     async def list_identifiers(
@@ -622,6 +660,7 @@ class OkfMarkdownVaultStore:
             )
             self._lineage[clean_ev.event_id] = clean_ev
             self._persist_meta_sync()
+        await self._register_record_terms("lineage_events", clean_ev)
         return clean_ev
 
     async def list_lineage_events(
@@ -665,6 +704,7 @@ class OkfMarkdownVaultStore:
         async with self._lock:
             self._positions[pos.position_id] = clone_model(pos)
             self._persist_meta_sync()
+        await self._register_record_terms("positions", pos)
         return pos
 
     async def list_positions(
@@ -695,6 +735,7 @@ class OkfMarkdownVaultStore:
         async with self._lock:
             self._coverages[cov.coverage_id] = clone_model(cov)
             self._persist_meta_sync()
+        await self._register_record_terms("coverages", cov)
         return cov
 
     async def list_coverages(
@@ -753,6 +794,7 @@ class OkfMarkdownVaultStore:
             self._claims[claim.claim_id] = clone_model(claim)
             self._write_claim_evidence_sidecar(claim)
             self._persist_meta_sync()
+        await self._register_record_terms("claims", claim)
         return claim
 
     async def seed_conflict_raw(self, conflict: ConflictSet) -> ConflictSet:
@@ -876,6 +918,7 @@ class OkfMarkdownVaultStore:
             new_epoch = self._bump_data_epoch(f"write_claim:{incoming.claim_id}", eff.user_id)
             self._persist_meta_sync()
 
+        await self._register_record_terms("claims", incoming, created_by=eff.user_id)
         sanitized = self.policy.sanitize_claim_for_principal(eff, incoming) or incoming
         return ClaimWriteResult(
             claim=sanitized,
@@ -942,6 +985,7 @@ class OkfMarkdownVaultStore:
             new_epoch = self._bump_data_epoch(f"update_claim:{existing.claim_id}->{new_claim_id}", eff.user_id)
             self._persist_meta_sync()
 
+        await self._register_record_terms("claims", updated, created_by=eff.user_id)
         sanitized = self.policy.sanitize_claim_for_principal(eff, updated) or updated
         return ClaimWriteResult(
             claim=sanitized,
@@ -1572,6 +1616,7 @@ class OkfMarkdownVaultStore:
             "watchlists": [w.model_copy(deep=True, update={"alerts": []}) for w in self._watchlists.values()],
             "revoked_principals": [(uid, meta.get("reason", "revoked")) for uid, meta in self._revoked.items()],
             "receipts": [clone_model(r) for r in self._receipts.values()],
+            "vocab_terms": [clone_model(t) for t in self._vocab.values()],
         }
 
     async def import_state(self, state: dict[str, Any], *, reset_epochs: bool = False) -> None:
@@ -1632,3 +1677,4 @@ class OkfMarkdownVaultStore:
                 self._write_watchlist_file(wl)
             self.materialize_indices()
             self._persist_meta_sync()
+        await self._import_vocab_state(state)

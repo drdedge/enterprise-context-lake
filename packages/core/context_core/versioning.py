@@ -30,8 +30,8 @@ from context_core.compression import ensure_utc, utc_now
 from context_core.models import Claim, Principal, WallSide
 from context_core.policy import PolicyEngine, wall_allows
 
-RecordType = Literal["entity", "knowledge_item", "topic", "claim", "memory", "watchlist"]
-RECORD_TYPES: tuple[str, ...] = ("entity", "knowledge_item", "topic", "claim", "memory", "watchlist")
+RecordType = Literal["entity", "knowledge_item", "topic", "claim", "memory", "watchlist", "vocab_term"]
+RECORD_TYPES: tuple[str, ...] = ("entity", "knowledge_item", "topic", "claim", "memory", "watchlist", "vocab_term")
 ChangeOp = Literal["upsert", "delete", "claim_create", "claim_update", "patch"]
 ChangeSource = Literal["ui", "api", "harness", "agent", "upload", "import", "system"]
 ChangeStatus = Literal["proposed", "merged", "rejected", "conflict", "failed"]
@@ -477,12 +477,15 @@ TEXT_FIELD = {
     "entity": "description",
     "memory": "content",
     "topic": "pref_label",
+    "vocab_term": "description",
 }
 
 
 def record_label(record_type: str, payload: dict[str, Any] | None) -> str:
     if not payload:
         return ""
+    if record_type == "vocab_term":
+        return f"{payload.get('vocab')}:{payload.get('key')}"
     for key in ("display_name", "pref_label", "key", "predicate"):
         if payload.get(key):
             if record_type == "claim":

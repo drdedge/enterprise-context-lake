@@ -65,7 +65,7 @@ def _render_entity_markdown(entity: Entity, claims: list[Any], topics: list[str]
         "okf_version": "0.2",
         "id": entity.canonical_key,
         "entity_id": entity.entity_id,
-        "entity_type": entity.entity_type.value,
+        "entity_type": entity.entity_type,
         "display_name": entity.display_name,
         "aliases": entity.aliases,
         "wall_side": entity.wall_side.value,

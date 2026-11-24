@@ -43,7 +43,7 @@ def _statement_block(statements: list[NumberedStatement]) -> str:
 
 def overview_prompt(entity: Entity, statements: list[NumberedStatement]) -> str:
     return (
-        f"Entity: {entity.display_name} ({entity.entity_type.value})\n"
+        f"Entity: {entity.display_name} ({entity.entity_type})\n"
         f"Description: {entity.description or '(none)'}\n\nStatements:\n{_statement_block(statements[:60])}\n\n"
         "Write a 2 to 4 sentence overview of this entity."
     )

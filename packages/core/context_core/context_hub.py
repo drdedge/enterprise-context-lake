@@ -273,7 +273,7 @@ def _entity_page(
     claims: list[tuple[Claim, VersionRecord]],
     release_id: int | None,
 ) -> tuple[str, str]:
-    etype = entity.entity_type.value if entity is not None else "entity"
+    etype = entity.entity_type if entity is not None else "entity"
     key = entity.canonical_key if entity is not None else entity_id
     path = f"entities/{_slug(etype)}/{_slug(key)}.md"
     lake: dict[str, Any] = {

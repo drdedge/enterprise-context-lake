@@ -342,7 +342,7 @@ class ViewportGroundedAgent:
             ]
             for ent in entities[:6]:
                 context_lines.append(
-                    f"- [entity:{ent.canonical_key}] {ent.display_name} ({ent.entity_type.value}): {ent.description}"
+                    f"- [entity:{ent.canonical_key}] {ent.display_name} ({ent.entity_type}): {ent.description}"
                 )
             for clm in claims[:12]:
                 ev_note = (

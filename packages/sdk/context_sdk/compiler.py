@@ -189,7 +189,7 @@ def _build_snapshot_sqlite_zst_sync(
             [
                 (
                     e.entity_id,
-                    e.entity_type.value,
+                    e.entity_type,
                     e.canonical_key,
                     e.display_name,
                     json.dumps(e.aliases),

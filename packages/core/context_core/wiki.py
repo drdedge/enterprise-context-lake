@@ -48,6 +48,7 @@ from context_core.models import (
 )
 from context_core.policy import wall_allows
 from context_core.receipts import build_receipt
+from context_core.vocabulary import VocabularyIndex
 
 PAGE_TEMPLATE_KIND = "page_template"
 WILDCARD_TYPE = "*"
@@ -160,6 +161,16 @@ depending on them. Template lookup walks from the entity's type up through its p
 
 def _no_parent(_entity_type: str) -> str | None:
     return None
+
+
+def type_parent_from_index(index: VocabularyIndex) -> TypeParentLookup:
+    """Parent lookup over the entity-type vocabulary; aliases and merged types resolve first."""
+
+    def lookup(entity_type: str) -> str | None:
+        term = index.get("entity_type", index.canonical("entity_type", entity_type))
+        return term.parent_key if term is not None else None
+
+    return lookup
 
 
 def resolve_template(
@@ -471,6 +482,8 @@ class WikiService:
         self._get_store = get_store
         self._get_retrieval = get_retrieval
         self.narrators = narrators or NarratorConfig()
+        # An explicit lookup wins; otherwise the store's entity-type tree (ADR-008) is used per call.
+        self._explicit_type_parent = type_parent
         self.type_parent: TypeParentLookup = type_parent or _no_parent
         # Lets the runtime switch every model off (deterministic mode) without rebuilding the service.
         self._models_enabled = models_enabled or (lambda: True)
@@ -512,9 +525,18 @@ class WikiService:
                 bad.append({"item_id": item.item_id, "error": exc.message})
         return good, bad
 
+    async def type_parent_lookup(self) -> TypeParentLookup:
+        """The parent-of-type lookup: the one passed in, else the store's entity-type vocabulary."""
+        if self._explicit_type_parent is not None:
+            return self._explicit_type_parent
+        index_fn = getattr(self.store, "vocabulary_index", None)
+        if index_fn is None:
+            return _no_parent
+        return type_parent_from_index(await index_fn())
+
     async def template_for(self, entity_type: str, principal: Principal, side: WallSide) -> PageTemplate:
         templates, _ = await self.load_templates(principal, side)
-        return resolve_template(entity_type, templates, type_parent=self.type_parent)
+        return resolve_template(entity_type, templates, type_parent=await self.type_parent_lookup())
 
     # -- structure ---------------------------------------------------------
 
@@ -534,18 +556,19 @@ class WikiService:
             principal=principal, entity_types=list(entity_types) if entity_types else None, topic_slug=topic_slug, limit=None
         )
         visible = [e for e in entities if _on_side(ws, e.wall_side) and e.status != "archived"]
-        visible.sort(key=lambda e: (e.entity_type.value, e.display_name.lower()))
+        visible.sort(key=lambda e: (e.entity_type, e.display_name.lower()))
         total = len(visible)
         page_slice = visible[offset : offset + limit]
         templates, bad = await self.load_templates(principal, ws)
+        type_parent = await self.type_parent_lookup()
         groups: dict[str, dict[str, Any]] = {}
         for e in page_slice:
-            et = e.entity_type.value
+            et = e.entity_type
             if et not in groups:
-                tpl = resolve_template(et, templates, type_parent=self.type_parent)
+                tpl = resolve_template(et, templates, type_parent=type_parent)
                 groups[et] = {
                     "entity_type": et,
-                    "parent_type": self.type_parent(et),
+                    "parent_type": type_parent(et),
                     "template_id": tpl.template_id,
                     "outline": tpl.outline(),
                     "pages": [],
@@ -592,7 +615,7 @@ class WikiService:
         eff_rec = ensure_utc(recorded_as_of)
         store = self.store
         entity = await self._entity_on_side(key, principal, ws)
-        template = await self.template_for(entity.entity_type.value, principal, ws)
+        template = await self.template_for(entity.entity_type, principal, ws)
         eid = entity.entity_id
 
         own = [
@@ -801,7 +824,7 @@ class WikiService:
             entity_id=eid,
             canonical_key=entity.canonical_key,
             title=entity.display_name,
-            entity_type=entity.entity_type.value,
+            entity_type=entity.entity_type,
             side=ws,
             as_of=format_utc(eff_as_of),
             recorded_as_of=format_utc(eff_rec),

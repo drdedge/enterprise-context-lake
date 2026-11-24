@@ -30,6 +30,7 @@ from context_core.models import (
     WatchlistUpdateInput,
 )
 from context_core.policy import PolicyEngine, wall_allows
+from context_core.vocabulary import VocabTerm, normalize_term_key, term_id_for, validate_term_change
 from context_core.versioning import (
     CHANNEL_NAMES,
     TEXT_FIELD,
@@ -104,8 +105,11 @@ class ChangeSetService:
             if before:
                 groups |= set(before.get("write_acl_groups") or [])
             return sorted(groups)
-        if record_type == "topic":
-            return [rec.get("owner_group") or "fund-stewards"]
+        if record_type in ("topic", "vocab_term"):
+            groups = {rec.get("owner_group") or "fund-stewards"}
+            if before and before.get("owner_group"):
+                groups.add(before["owner_group"])
+            return sorted(groups)
         if record_type == "claim":
             subject = rec.get("subject_id")
             ent = await self.store.get_entity_raw(subject) if subject and hasattr(self.store, "get_entity_raw") else None
@@ -244,6 +248,27 @@ class ChangeSetService:
                 raise NotFoundError(f"Topic not found: {record_id}")
             after = Topic.model_validate({**before_v.payload, **fields}).model_dump(mode="json")
             payload = {"topic_id": record_id, **fields}
+        elif rt == "vocab_term":
+            # Steward edits to the editable taxonomy (ADR-008): add a term, re-parent, relabel,
+            # approve a proposed term (status active), merge it into another, or deprecate it.
+            if op != "upsert":
+                raise ValidationError("vocab_term supports op 'upsert' only (deprecate with status instead of deleting)")
+            if not record_id:
+                vocab, key = payload.get("vocab"), payload.get("key")
+                if not vocab or not key:
+                    raise ValidationError("vocab_term upsert needs record_id (<vocab>:<key>) or payload.vocab and payload.key")
+                record_id = term_id_for(normalize_term_key(vocab), normalize_term_key(key))
+            vocab, _, key = record_id.partition(":")
+            before_v = self.ledger.latest_version("vocab_term", record_id)
+            base = before_v.payload if before_v and before_v.payload else None
+            if base is None and hasattr(self.store, "get_vocab_term"):
+                current = await self.store.get_vocab_term(record_id)
+                base = current.model_dump(mode="json") if current else None
+            term = VocabTerm.model_validate({**(base or {}), **payload, "vocab": vocab, "key": key})
+            if hasattr(self.store, "vocabulary_index"):
+                validate_term_change(term, await self.store.vocabulary_index())
+            after = term.model_dump(mode="json")
+            payload = after
         elif rt in ("entity", "knowledge_item", "topic"):
             model = {"entity": Entity, "knowledge_item": KnowledgeItem, "topic": Topic}[rt]
             key = {"entity": "entity_id", "knowledge_item": "item_id", "topic": "topic_id"}[rt]
@@ -512,6 +537,8 @@ class ChangeSetService:
             await store.update_topic(item.record_id, TopicPatchInput.model_validate(body), principal=applier)
         elif rt == "topic":
             await store.upsert_topic(Topic.model_validate(p))
+        elif rt == "vocab_term":
+            await store.upsert_vocab_term(VocabTerm.model_validate(p))
         elif rt == "claim" and op == "claim_create":
             await store.write_claim(ClaimCreateInput.model_validate(p), principal=applier)
         elif rt == "claim" and op == "claim_update":
@@ -591,6 +618,11 @@ class ChangeSetService:
                 if rt == "knowledge_item":
                     raise ValidationError("Reverting the creation of a note is not supported yet; archive it instead")
                 return ChangeItemInput(record_type=rt, op="upsert", record_id=v.record_id, payload={**(v.payload or {}), "status": "archived"})  # type: ignore[arg-type]
+            return ChangeItemInput(record_type=rt, op="upsert", record_id=v.record_id, payload=dict(prev.payload))  # type: ignore[arg-type]
+        if rt == "vocab_term":
+            # Undoing a new term deprecates it; anything else restores the previous version
+            if prev is None or prev.payload is None:
+                return ChangeItemInput(record_type=rt, op="upsert", record_id=v.record_id, payload={**(v.payload or {}), "status": "deprecated"})  # type: ignore[arg-type]
             return ChangeItemInput(record_type=rt, op="upsert", record_id=v.record_id, payload=dict(prev.payload))  # type: ignore[arg-type]
         if rt == "claim":
             current = Claim.model_validate(v.payload)

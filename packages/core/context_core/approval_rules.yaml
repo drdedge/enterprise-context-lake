@@ -10,7 +10,7 @@
 #
 # match keys (all optional; every key given must match):
 #   kinds:              change | revert
-#   record_types:       entity | knowledge_item | topic | claim | memory | watchlist
+#   record_types:       entity | knowledge_item | topic | claim | memory | watchlist | vocab_term
 #   ops:                upsert | delete | claim_create | claim_update
 #   sources:            ui | api | harness | agent | upload | import | system | context_hub
 #   wall_sides:         wall side of the record after the change
@@ -20,7 +20,7 @@
 #   crosses_wall:       true when the change moves a record to a different wall side
 #   author_is_owner:    true when a personal memory or watchlist is changed by its owner
 #   author_is_steward:  true when the author is in the record's steward groups (write_acl_groups of
-#                       the record or of a claim's subject entity; owner_group for topics)
+#                       the record or of a claim's subject entity; owner_group for topics and terms)
 #
 # outcome keys:
 #   approval:           auto | review
@@ -68,7 +68,17 @@ rules:
 
   - id: agent-privileged
     description: An agent or harness changing approved facts, directives or entities needs a steward.
-    match: {sources: [agent, harness], record_types: [claim, entity, knowledge_item, topic]}
+    match: {sources: [agent, harness], record_types: [claim, entity, knowledge_item, topic, vocab_term]}
+    approval: review
+    approvers: [steward]
+    min_approvals: 1
+
+  - id: vocabulary
+    description: >-
+      Editing the taxonomy (entity types, identifier schemes, predicates, tag values) needs a
+      steward of that vocabulary, unless a steward makes the edit. Terms first seen in data are
+      registered as "proposed" automatically and recorded in history; approving one is an edit.
+    match: {record_types: [vocab_term], author_is_steward: false}
     approval: review
     approvers: [steward]
     min_approvals: 1

@@ -460,7 +460,7 @@ async def get_stream(
                 "entity_id": e.entity_id,
                 "canonical_key": e.canonical_key,
                 "display_name": e.display_name,
-                "entity_type": e.entity_type.value,
+                "entity_type": e.entity_type,
                 "description": e.description,
                 "wall_side": e.wall_side.value,
                 "edge_count": edge_counts.get(e.entity_id, 0),
@@ -566,7 +566,7 @@ async def list_entities(
     }
     auth_eids = {e.entity_id for e in entities}
     for e in entities:
-        et = e.entity_type.value
+        et = e.entity_type
         facet_counts["entity_type"][et] = facet_counts["entity_type"].get(et, 0) + 1
         cs = cov_by_issuer.get(e.entity_id)
         if cs:
@@ -633,7 +633,7 @@ async def list_entities(
                 "entity_id": e.entity_id,
                 "canonical_key": e.canonical_key,
                 "display_name": e.display_name,
-                "entity_type": e.entity_type.value,
+                "entity_type": e.entity_type,
                 "description": e.description,
                 "aliases": e.aliases,
                 "wall_side": e.wall_side.value,
@@ -705,14 +705,14 @@ async def get_entity_detail(
     )
     positions = await store.list_positions(
         principal=principal,
-        vehicle_id=entity.entity_id if entity.entity_type.value == "legal_vehicle" else None,
-        issuer_id=entity.entity_id if entity.entity_type.value == "issuer" else None,
+        vehicle_id=entity.entity_id if entity.entity_type == "legal_vehicle" else None,
+        issuer_id=entity.entity_id if entity.entity_type == "issuer" else None,
     )
-    if entity.entity_type.value not in ("legal_vehicle", "issuer"):
+    if entity.entity_type not in ("legal_vehicle", "issuer"):
         positions = []
     coverages = (
         await store.list_coverages(principal=principal, issuer_id=entity.entity_id)
-        if entity.entity_type.value == "issuer"
+        if entity.entity_type == "issuer"
         else []
     )
     all_bindings = await store.list_skill_bindings()
@@ -740,11 +740,11 @@ async def get_entity_detail(
                 "entity_id": subj.entity_id,
                 "canonical_key": subj.canonical_key,
                 "display_name": subj.display_name,
-                "entity_type": subj.entity_type.value,
+                "entity_type": subj.entity_type,
                 "source_entity_id": subj.entity_id,
                 "source_canonical_key": subj.canonical_key,
                 "source_display_name": subj.display_name,
-                "source_entity_type": subj.entity_type.value,
+                "source_entity_type": subj.entity_type,
                 "predicate": inc.predicate,
                 "direction": "in",
                 "context_purpose": inc.context_purpose,
