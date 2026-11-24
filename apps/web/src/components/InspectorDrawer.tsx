@@ -11,7 +11,7 @@ import {
   ShieldAlert,
   X,
 } from "lucide-react";
-import { api, ApiError } from "../api/client";
+import { api, ApiError, isPendingApproval } from "../api/client";
 import { HistoryPanel } from "./HistoryPanel";
 import type {
   AuthContextState,
@@ -204,6 +204,13 @@ export function InspectorDrawer({
       });
       onMutated();
     } catch (err: unknown) {
+      if (isPendingApproval(err)) {
+        setEditingClaimId(null);
+        setProposingConflictId(null);
+        setActionMsg({ type: "ok", text: err.message });
+        onMutated();
+        return;
+      }
       setActionMsg({
         type: "err",
         text: err instanceof Error ? err.message : "Proposal failed.",
@@ -227,6 +234,13 @@ export function InspectorDrawer({
       setActionMsg({ type: "ok", text: "Claim superseded cleanly." });
       onMutated();
     } catch (err: unknown) {
+      if (isPendingApproval(err)) {
+        setEditingClaimId(null);
+        setProposingConflictId(null);
+        setActionMsg({ type: "ok", text: err.message });
+        onMutated();
+        return;
+      }
       setActionMsg({
         type: "err",
         text: err instanceof Error ? err.message : "Update failed.",

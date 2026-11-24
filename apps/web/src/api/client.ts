@@ -97,7 +97,19 @@ async function requestJson<T>(
     throw new ApiError(response.status, code, message);
   }
 
-  return (await response.json()) as T;
+  const body = (await response.json()) as T;
+  if (response.status === 202) {
+    const pending = (body as { pending_approval?: { message?: string; change_id?: string } }).pending_approval;
+    if (pending) {
+      // The write was filed as a proposed change set that needs approval (ADR-007).
+      throw new ApiError(202, "pending_approval", pending.message || `Sent for approval as ${pending.change_id}`);
+    }
+  }
+  return body;
+}
+
+export function isPendingApproval(err: unknown): err is ApiError {
+  return err instanceof ApiError && err.code === "pending_approval";
 }
 
 export const api = {
