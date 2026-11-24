@@ -97,7 +97,7 @@ class StorePort(Protocol):
         principal: Principal,
         entity_types: Sequence[str] | None = None,
         topic_slug: str | None = None,
-        limit: int = 200,
+        limit: int | None = 200,
         offset: int = 0,
     ) -> list[Entity]: ...
     async def upsert_identifier(self, ident: EntityIdentifier) -> EntityIdentifier: ...

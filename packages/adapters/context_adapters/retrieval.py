@@ -23,6 +23,7 @@ from context_core.models import (
     ContextBundleQuery,
     Coverage,
     Entity,
+    EntityIdentifier,
     GraphPayload,
     KnowledgeItem,
     MemoryRecord,
@@ -98,6 +99,18 @@ class _BaseRetriever:
             raise AuthenticationError("Principal is revoked")
         return principal
 
+    async def _identifiers_by_entity(
+        self, entity_ids: Sequence[str], *, as_of: datetime, recorded_as_of: datetime
+    ) -> dict[str, list[EntityIdentifier]]:
+        """Fetch identifiers for many entities in one store call (falls back to one call per entity)."""
+        bulk = getattr(self.store, "list_identifiers_for", None)
+        if bulk is not None:
+            return await bulk(list(entity_ids), as_of=as_of, recorded_as_of=recorded_as_of)
+        return {
+            eid: await self.store.list_identifiers(eid, as_of=as_of, recorded_as_of=recorded_as_of)
+            for eid in entity_ids
+        }
+
     async def _authorized_slice(
         self, *, principal: Principal, flt: SearchFilter | None
     ) -> dict[str, Any]:
@@ -109,7 +122,7 @@ class _BaseRetriever:
             principal=eff,
             entity_types=flt.entity_types if flt else None,
             topic_slug=flt.topic_slug if flt else None,
-            limit=2000,
+            limit=None,
             offset=0,
         )
         entity_map = {e.entity_id: e for e in entities}
@@ -422,6 +435,9 @@ class LexicalManifestRetriever(_BaseRetriever):
             rg_stems = await asyncio.to_thread(self._run_rg_sync, q_raw)
 
         filtered_entities = self._filter_entities_by_facets(data, flt)
+        idents_by_eid = await self._identifiers_by_entity(
+            [e.entity_id for e in filtered_entities], as_of=data["as_of"], recorded_as_of=data["recorded_as_of"]
+        )
         allowed_eids = {e.entity_id for e in filtered_entities}
         entity_map: dict[str, Entity] = data["entity_map"]
         entity_topics: dict[str, list[str]] = data["entity_topics"]
@@ -453,10 +469,7 @@ class LexicalManifestRetriever(_BaseRetriever):
                     score += 2.0 * (tok_hits / len(tokens))
 
             # Identifier match (bitemporal)
-            idents = await self.store.list_identifiers(
-                ent.entity_id, as_of=data["as_of"], recorded_as_of=data["recorded_as_of"]
-            )
-            for ident in idents:
+            for ident in idents_by_eid.get(ent.entity_id, ()):
                 if q_lower == ident.identifier_value.lower():
                     score += 9.5
                     snippet = f"{ident.scheme.upper()}: {ident.identifier_value}"
@@ -632,6 +645,9 @@ class FacetGraphRetriever(_BaseRetriever):
         tokens = [t for t in re.split(r"[\s,]+", q_lower) if t]
 
         filtered_entities = self._filter_entities_by_facets(data, flt)
+        idents_by_eid = await self._identifiers_by_entity(
+            [e.entity_id for e in filtered_entities], as_of=data["as_of"], recorded_as_of=data["recorded_as_of"]
+        )
         allowed_eids = {e.entity_id for e in filtered_entities}
         entity_map: dict[str, Entity] = data["entity_map"]
         entity_topics: dict[str, list[str]] = data["entity_topics"]
@@ -672,10 +688,7 @@ class FacetGraphRetriever(_BaseRetriever):
                 elif tok_hits >= max(2, math.ceil(0.6 * len(tokens))):
                     s += 2.0 * (tok_hits / len(tokens))
 
-            idents = await self.store.list_identifiers(
-                ent.entity_id, as_of=data["as_of"], recorded_as_of=data["recorded_as_of"]
-            )
-            for ident in idents:
+            for ident in idents_by_eid.get(ent.entity_id, ()):
                 if q_lower == ident.identifier_value.lower():
                     s += 9.5
                     entity_snippets[ent.entity_id] = f"{ident.scheme.upper()}: {ident.identifier_value}"

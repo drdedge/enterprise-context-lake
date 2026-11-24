@@ -94,7 +94,7 @@ class GraphProjectionService:
         eff_as_of = ensure_utc(as_of) or utc_now()
         eff_rec = ensure_utc(recorded_as_of) or utc_now()
 
-        entities = await self.store.list_entities(principal=principal, limit=2000, offset=0)
+        entities = await self.store.list_entities(principal=principal, limit=None, offset=0)
         entity_map: dict[str, Entity] = {e.entity_id: e for e in entities}
         key_to_id: dict[str, str] = {e.canonical_key: e.entity_id for e in entities}
 
@@ -148,10 +148,24 @@ class GraphProjectionService:
 
         # Lineage events per authorized entity (deduplicated)
         lineage_by_id: dict[str, EntityLineageEvent] = {}
-        for eid in entity_map:
-            for ev in await self.store.list_lineage_events(eid, principal=principal):
-                if ev.source_entity_id in entity_map and ev.target_entity_id in entity_map:
-                    lineage_by_id[ev.event_id] = ev
+        bulk_lineage = getattr(self.store, "list_lineage_events_for", None)
+        if bulk_lineage is not None:
+            # One store call instead of one per entity. Rebuild the per-entity iteration order of the
+            # original loop so edge order (and therefore the client's layout) is unchanged.
+            events_by_eid: dict[str, list[EntityLineageEvent]] = {}
+            for ev in await bulk_lineage(None, principal=principal):
+                events_by_eid.setdefault(ev.source_entity_id, []).append(ev)
+                if ev.target_entity_id != ev.source_entity_id:
+                    events_by_eid.setdefault(ev.target_entity_id, []).append(ev)
+            for eid in entity_map:
+                for ev in events_by_eid.get(eid, ()):
+                    if ev.source_entity_id in entity_map and ev.target_entity_id in entity_map:
+                        lineage_by_id[ev.event_id] = ev
+        else:
+            for eid in entity_map:
+                for ev in await self.store.list_lineage_events(eid, principal=principal):
+                    if ev.source_entity_id in entity_map and ev.target_entity_id in entity_map:
+                        lineage_by_id[ev.event_id] = ev
 
         # Build authorized edges
         edges: list[GraphEdge] = []
