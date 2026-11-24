@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from context_core.compression import ensure_utc
+from context_core.model_boundary import external_model_allowed
 from context_core.models import (
     Claim,
     ConflictSet,
@@ -271,6 +272,11 @@ class ViewportGroundedAgent:
         effective_mode = _select_effective_llm_mode(self._llm_mode)
         answer_md: str | None = None
         used_mode: Literal["gemini", "deterministic"] = "deterministic"
+
+        # The Gemini API is an external service: only ever send it public-side material (ADR-009).
+        if effective_mode == "gemini" and not external_model_allowed([*entities, *claims, *conflicts]):
+            effective_mode = "deterministic"
+            tool_calls.append(AgentToolCallMetric(tool="llm.gemini.blocked_by_wall", duration_ms=0.0))
 
         if effective_mode == "gemini":
             t_llm = time.perf_counter()

@@ -16,6 +16,7 @@ from context_mcp.primitives import (
     tool_search,
 )
 from context_mcp.runtime import LakeRuntime, current_principal_var, make_receipt
+from context_mcp.wiki_tools import tool_wiki_ask, tool_wiki_read, tool_wiki_structure
 from context_mcp.security import (
     MAX_CODEMODE_OUTPUT_BYTES,
     sanitize_error_message,
@@ -54,6 +55,9 @@ __all__ = [
     "tool_read",
     "tool_resolve_context",
     "tool_search",
+    "tool_wiki_ask",
+    "tool_wiki_read",
+    "tool_wiki_structure",
     "truncate_output_payload",
     "validate_safe_uri",
 ]
