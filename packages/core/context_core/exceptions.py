@@ -79,3 +79,20 @@ class DirectoryUnavailableError(ContextLakeError):
 
     code = "service_unavailable"
     status_code = 503
+
+
+class PendingApprovalError(ContextLakeError):
+    """A direct write needs approval under the change-set rules, so it was filed as a proposal (HTTP 202).
+
+    Not a failure: nothing was written yet, and the returned change set id can be approved later.
+    """
+
+    code = "pending_approval"
+    status_code = 202
+
+    def __init__(self, message: str, *, change_set: dict[str, object]) -> None:
+        super().__init__(message)
+        self.change_set = change_set
+
+    def to_error_dict(self) -> dict[str, dict[str, object]]:  # type: ignore[override]
+        return {"pending_approval": {"message": self.message, **self.change_set}}

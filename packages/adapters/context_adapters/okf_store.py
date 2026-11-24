@@ -951,6 +951,18 @@ class OkfMarkdownVaultStore:
             snapshot_scheduled=updated.epistemic_status == "approved_fact",
         )
 
+    async def get_claim_raw(self, claim_id: str) -> Claim | None:
+        """Unsanitized claim for internal bookkeeping (version history). Never return it to a caller."""
+        await self._ensure_init()
+        clm = self._claims.get(claim_id)
+        return clone_model(clm) if clm is not None else None
+
+    async def get_entity_raw(self, entity_id_or_key: str) -> Entity | None:
+        """Unfiltered entity for internal policy decisions (steward groups). Never return it to a caller."""
+        await self._ensure_init()
+        ent = self._resolve_entity_raw(entity_id_or_key)
+        return clone_model(ent) if ent is not None else None
+
     async def get_claim(self, claim_id: str, *, principal: Principal) -> Claim | None:
         await self._ensure_init()
         eff = await self._effective_principal(principal)

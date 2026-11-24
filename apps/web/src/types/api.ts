@@ -566,3 +566,122 @@ export interface ApiErrorBody {
   };
   detail?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Version control (ADR-007)
+// ---------------------------------------------------------------------------
+
+export interface RedlineSegment {
+  op: "equal" | "delete" | "insert";
+  text: string;
+}
+
+export interface FieldChangeDTO {
+  field: string;
+  kind: "added" | "removed" | "changed";
+  old: unknown;
+  new: unknown;
+  redline?: RedlineSegment[];
+}
+
+export interface ApprovalDTO {
+  approver_id: string;
+  approver_name: string;
+  decision: "approve" | "reject";
+  comment: string;
+  at: string;
+}
+
+export interface HistoryVersionDTO {
+  version_no: number;
+  op: string;
+  recorded_at: string;
+  label: string;
+  change_id: string;
+  title: string;
+  reason: string;
+  author_id: string;
+  author_name: string;
+  source: string;
+  agent_id: string | null;
+  run_id: string | null;
+  kind: string;
+  approvals: ApprovalDTO[];
+  reverted_by_change_id: string | null;
+  reverts_change_id: string | null;
+  releases: number[];
+  channels: string[];
+  is_head: boolean;
+}
+
+export interface HistoryProposalDTO {
+  change_id: string;
+  title: string;
+  status: string;
+  base_version: number | null;
+  author_name: string;
+  source: string;
+  created_at: string;
+  approvers: string[];
+  approvals: ApprovalDTO[];
+}
+
+export interface HistoryDTO {
+  record_type: string;
+  record_id: string;
+  label: string;
+  head_version: number | null;
+  versions: HistoryVersionDTO[];
+  proposals: HistoryProposalDTO[];
+  channels: Record<string, number | null>;
+}
+
+export interface DiffDTO {
+  record_type: string;
+  record_id: string;
+  from_version: number | null;
+  to_version: number;
+  restricted: boolean;
+  message: string | null;
+  changes: FieldChangeDTO[];
+  redline: RedlineSegment[];
+  text_field: string | null;
+}
+
+export interface ChangeItemDTO {
+  seq: number;
+  record_type: string;
+  op: string;
+  record_id: string | null;
+  label: string;
+  before_version: number | null;
+  applied_version: number | null;
+  rule_id: string | null;
+  changes?: FieldChangeDTO[];
+  redline?: RedlineSegment[];
+}
+
+export interface ChangeSetDTO {
+  change_id: string;
+  title: string;
+  reason: string;
+  kind: string;
+  source: string;
+  author_id: string;
+  author_name: string;
+  agent_id: string | null;
+  run_id: string | null;
+  status: "proposed" | "merged" | "rejected" | "conflict" | "failed";
+  approval: "auto" | "review";
+  rule_ids: string[];
+  approvers: string[];
+  min_approvals: number;
+  items: ChangeItemDTO[];
+  approvals: ApprovalDTO[];
+  created_at: string;
+  merged_at: string | null;
+  reverts_change_id: string | null;
+  reverted_by_change_id: string | null;
+  error: string | null;
+  can_approve: boolean;
+}
