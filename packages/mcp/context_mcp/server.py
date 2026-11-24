@@ -31,6 +31,7 @@ from context_mcp.primitives import (
     tool_search,
 )
 from context_mcp.runtime import LakeRuntime, current_principal_var
+from context_mcp.wiki_tools import tool_wiki_ask, tool_wiki_read, tool_wiki_structure
 
 
 def _make_tool_result(data: dict[str, Any], summary: str) -> ToolResult:
@@ -117,7 +118,7 @@ class PrincipalPolicyMiddleware(Middleware):
 
 
 def create_primitive_mcp_server(runtime: LakeRuntime) -> FastMCP:
-    """Create Surface A FastMCP server (`/mcp`) with 9 compact typed primitive tools + resources."""
+    """Create Surface A FastMCP server (`/mcp`) with 12 compact typed primitive tools + resources."""
     mcp = FastMCP(
         name="enterprise-context-lake",
         instructions=(
@@ -503,6 +504,79 @@ def create_primitive_mcp_server(runtime: LakeRuntime) -> FastMCP:
         )
         summary = f"memory_upsert saved {res['memory']['memory_id']} (receipt={res['receipt_id']})"
         return _make_tool_result(res, summary)
+
+    # Entity pages (ADR-009). Named after DeepWiki's tools so existing harness prompts carry over.
+    @mcp.tool(
+        name="read_wiki_structure",
+        description=(
+            "List the entity pages you can read, grouped by entity type, with each type's section outline. "
+            "Use it to browse before searching. Pages are cut by wall side; the default is your own side."
+        ),
+        meta={"input_examples": [{"entity_types": ["issuer"], "limit": 50}, {"topic_slug": "cashflows-liquidity"}]},
+    )
+    async def read_wiki_structure_tool(
+        side: Literal["public_side", "private_side", "above_the_wall"] | None = None,
+        entity_types: list[str] | None = None,
+        topic_slug: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> ToolResult:
+        principal = await _principal()
+        res = await tool_wiki_structure(
+            runtime, principal, side=side, entity_types=entity_types, topic_slug=topic_slug, limit=limit, offset=offset
+        )
+        n_pages = sum(len(g["pages"]) for g in res["groups"])
+        summary = f"read_wiki_structure ({res['side']}): {n_pages} of {res['total']} pages in {len(res['groups'])} entity types"
+        return _make_tool_result(res, summary)
+
+    @mcp.tool(
+        name="read_wiki_contents",
+        description=(
+            "Read one entity page as Markdown: overview, key facts, relationships, a Mermaid diagram, open "
+            "conflicts, directives and recent changes. Every statement cites a numbered source claim."
+        ),
+        meta={"input_examples": [{"id_or_key": "veh:alpha-credit-offshore-lp"}, {"id_or_key": "issuer:apex-industrial", "channel": "production"}]},
+    )
+    async def read_wiki_contents_tool(
+        id_or_key: str,
+        side: Literal["public_side", "private_side", "above_the_wall"] | None = None,
+        as_of: str | None = None,
+        recorded_as_of: str | None = None,
+        channel: Literal["dev", "staging", "production"] | None = None,
+        release: int | None = None,
+    ) -> ToolResult:
+        principal = await _principal()
+        res = await tool_wiki_read(
+            runtime, principal, id_or_key=id_or_key, side=side, as_of=as_of,
+            recorded_as_of=recorded_as_of, channel=channel, release=release,
+        )
+        if not res.get("found"):
+            return _make_tool_result(res, f"read_wiki_contents '{id_or_key}': not_found")
+        return ToolResult(content=[mt.TextContent(type="text", text=res["markdown"])], structured_content=res)
+
+    @mcp.tool(
+        name="ask_wiki_question",
+        description=(
+            "Ask a question and get an answer built only from entity pages you can read, with numbered "
+            "citations to source claims. Optionally name the pages to use."
+        ),
+        meta={"input_examples": [{"question": "What is the admin code for Alpha Credit Offshore?"}]},
+    )
+    async def ask_wiki_question_tool(
+        question: str,
+        side: Literal["public_side", "private_side", "above_the_wall"] | None = None,
+        entity_keys: list[str] | None = None,
+        as_of: str | None = None,
+        recorded_as_of: str | None = None,
+        channel: Literal["dev", "staging", "production"] | None = None,
+        release: int | None = None,
+    ) -> ToolResult:
+        principal = await _principal()
+        res = await tool_wiki_ask(
+            runtime, principal, question=question, side=side, entity_keys=entity_keys, as_of=as_of,
+            recorded_as_of=recorded_as_of, channel=channel, release=release,
+        )
+        return ToolResult(content=[mt.TextContent(type="text", text=res["answer_markdown"])], structured_content=res)
 
     @mcp.resource(
         "context://memory/me",

@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { api, ApiError, isPendingApproval } from "../api/client";
 import { HistoryPanel } from "./HistoryPanel";
+import { WikiPagePanel } from "./WikiPagePanel";
 import type {
   AuthContextState,
   ClaimDTO,
@@ -987,6 +988,9 @@ export function InspectorDrawer({
                 </div>
               </section>
             )}
+
+            {/* Entity page built from claims, with citations (ADR-009) */}
+            <WikiPagePanel entityKey={detail.entity.canonical_key} auth={auth} dataEpoch={dataEpoch} />
 
             {/* Version history (git-graph style, ADR-007) */}
             <HistoryPanel

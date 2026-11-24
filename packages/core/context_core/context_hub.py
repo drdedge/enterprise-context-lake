@@ -33,7 +33,7 @@ EXPORTABLE_WALL_SIDE = "public_side"
 REPO_HANDLE_RE = re.compile(r"^[a-z][a-z0-9-_]*$")
 MANIFEST_PATH = ".lake/repo.json"
 EXPORTED_RECORD_TYPES = ("knowledge_item", "entity", "claim")
-KNOWLEDGE_DIR_KINDS = ("domain_knowledge", "data_access_guidance")
+KNOWLEDGE_DIR_KINDS = ("domain_knowledge", "data_access_guidance", "page_template")
 
 HubKind = Literal["agent", "skill"]
 

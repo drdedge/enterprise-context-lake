@@ -1,4 +1,6 @@
 import type {
+  WallSideName,
+  WikiPageDTO,
   AdapterConfigDTO,
   AgentChatResponseDTO,
   ApiErrorBody,
@@ -678,5 +680,19 @@ export const versionsApi = {
       extraHeaders: { "X-Change-Source": "ui" },
     });
     return res.change_set;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Entity pages (ADR-009)
+// ---------------------------------------------------------------------------
+
+export const wikiApi = {
+  async page(auth: AuthContextState, key: string, side?: WallSideName): Promise<WikiPageDTO> {
+    const res = await requestJson<{ page: WikiPageDTO }>(
+      `/api/v1/wiki/pages/${encodeURIComponent(key)}${buildQuery({ side })}`,
+      auth,
+    );
+    return res.page;
   },
 };

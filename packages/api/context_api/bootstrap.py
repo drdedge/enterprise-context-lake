@@ -16,6 +16,8 @@ from context_core.models import ActorMode, ChannelMode
 from context_core.policy import PolicyEngine, PrincipalDirectory
 from context_core.registry import AdapterRegistry, LlmMode
 from context_core.seeder import seed_store_from_fixtures
+from context_core.wiki import WikiService
+from context_agents.wiki_narrators import narrators_from_env
 from context_mcp.runtime import LakeRuntime
 
 from context_api.auth import AuthService
@@ -73,6 +75,7 @@ class AppRuntimeContext:
     events: EventBus
     uploads: UploadService
     mcp_runtime: LakeRuntime
+    wiki: Any = None
     bundle_cache: TTLCache[Any, Any] = field(default_factory=lambda: TTLCache(maxsize=256, ttl=300.0))
     seed_fixtures: bool = True
     compile_initial_snapshots: bool = True
@@ -232,6 +235,13 @@ def build_runtime_context_sync(
     async def _resolve_for_mcp(headers: Any) -> Any:
         return await auth.resolve_principal(headers, store=registry.store)
 
+    wiki = WikiService(
+        get_store=lambda: registry.store,
+        get_retrieval=lambda: registry.retrieval,
+        narrators=narrators_from_env(llm_mode),
+        models_enabled=lambda: registry.llm_mode != "deterministic",
+    )
+
     mcp_runtime = LakeRuntime(
         get_store=lambda: registry.store,
         get_retrieval=lambda: registry.retrieval,
@@ -240,6 +250,7 @@ def build_runtime_context_sync(
         get_snapshots=lambda: registry.snapshots,
         principal_resolver=_resolve_for_mcp,
         default_principal=default_principal,
+        extra={"wiki": wiki, "versions": lambda: getattr(registry, "versions", None)},
     )
 
     return AppRuntimeContext(
@@ -250,6 +261,7 @@ def build_runtime_context_sync(
         events=events,
         uploads=uploads,
         mcp_runtime=mcp_runtime,
+        wiki=wiki,
         seed_fixtures=seed_fixtures,
         compile_initial_snapshots=compile_initial_snapshots,
         _temp_dir=temp_dir_obj,
