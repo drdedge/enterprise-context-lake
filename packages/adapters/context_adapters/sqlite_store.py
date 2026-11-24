@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
+import time
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -371,17 +373,28 @@ def _sqlite_url(db_path: str | Path | None) -> str:
     return f"sqlite+aiosqlite:///{p.as_posix()}"
 
 
-class _GenerationLock(asyncio.Lock):
-    """asyncio.Lock that counts releases. Every write in this store runs under it, so a change in
-    ``generation`` (or the lock being held) means a write may have landed since a read began."""
+_WRITE_SQL = re.compile(
+    r"^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+[\"\[`]?(\w+)",
+    re.IGNORECASE,
+)
+_READ_SQL = re.compile(r"^\s*(?:SELECT|PRAGMA|WITH|EXPLAIN|BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b", re.IGNORECASE)
 
-    def __init__(self) -> None:
+#: Upper bound on how long a cached full-table scan is reused, whatever the change detection says.
+SCAN_CACHE_TTL_SECONDS = 2.0
+
+
+class _ReleaseHookLock(asyncio.Lock):
+    """asyncio.Lock that runs a callback just before each release (i.e. after a write committed)."""
+
+    def __init__(self, on_release: Any) -> None:
         super().__init__()
-        self.generation = 0
+        self._on_release = on_release
 
     def release(self) -> None:
-        self.generation += 1
-        super().release()
+        try:
+            self._on_release()
+        finally:
+            super().release()
 
 
 class SqliteBitemporalStore:
@@ -432,12 +445,31 @@ class SqliteBitemporalStore:
 
         self._initialized = False
         self._fts_enabled = False
-        self._write_lock = _GenerationLock()
-        # Read cache for full-table scans (entities, claims). Keyed by the in-process write generation
-        # plus SQLite's PRAGMA data_version, which changes when ANY other connection (including other
-        # processes) commits, so writes from elsewhere also invalidate it.
-        self._scan_cache: dict[str, tuple[tuple[int, int], list[Any]]] = {}
+        self._write_lock = _ReleaseHookLock(self._after_own_write)
+        # Read cache for full-table scans (entities, claims).
+        # - Writes by this store: every INSERT/UPDATE/DELETE this engine executes bumps a per-table
+        #   counter (any other write statement bumps all tables), so they invalidate exactly.
+        # - Writes by anything else (another store instance, another process, a raw sqlite3 handle):
+        #   detected with SQLite's PRAGMA data_version on a dedicated connection. Our own commits also
+        #   move it, so it is re-read after each of our writes; a foreign commit landing in that same
+        #   instant could be missed, which SCAN_CACHE_TTL_SECONDS bounds.
+        # Nothing is cached while a write holds the lock, and a load is only cached if its key did
+        # not move while it ran.
+        self._scan_cache: dict[str, tuple[tuple[int, int, int], float, list[Any]]] = {}
+        self._table_writes: dict[str, int] = {}
+        self._any_writes = 0
+        self._foreign_writes = 0
+        self._own_data_version: int | None = None
         self._version_conn: sqlite3.Connection | None = None
+
+        @event.listens_for(self._engine.sync_engine, "before_cursor_execute")
+        def _track_writes(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+            m = _WRITE_SQL.match(statement)
+            if m:
+                name = m.group(1).lower()
+                self._table_writes[name] = self._table_writes.get(name, 0) + 1
+            elif not _READ_SQL.match(statement):
+                self._any_writes += 1  # DDL or anything unrecognised: invalidate everything
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -494,14 +526,29 @@ class SqliteBitemporalStore:
             self._version_conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
         return int(self._version_conn.execute("PRAGMA data_version").fetchone()[0])
 
-    def _cache_key(self) -> tuple[int, int] | None:
-        """Current cache key, or None while a write holds the lock (then nothing is cached)."""
+    def _after_own_write(self) -> None:
+        """Re-baseline data_version after this store's own commit so it is not seen as foreign."""
+        try:
+            dv = self._data_version()
+        except sqlite3.Error:
+            self._foreign_writes += 1
+            self._own_data_version = None
+            return
+        self._own_data_version = dv
+
+    def _cache_key(self, table: str) -> tuple[int, int, int] | None:
+        """Current cache key for ``table``, or None while a write holds the lock (no caching then)."""
         if self._write_lock.locked():
             return None
         try:
-            return (self._write_lock.generation, self._data_version())
+            dv = self._data_version()
         except sqlite3.Error:
             return None
+        if dv != self._own_data_version:
+            # Someone else committed since our last look
+            self._foreign_writes += 1
+            self._own_data_version = dv
+        return (self._table_writes.get(table, 0), self._any_writes, self._foreign_writes)
 
     async def _cached_scan(self, name: str, load: Any) -> list[Any]:
         """Return the converted rows of a full-table read, reusing them until any write lands.
@@ -509,13 +556,14 @@ class SqliteBitemporalStore:
         ``load`` is an async callable returning the freshly converted list. The cached list is shared,
         so callers must copy (``clone_model``) or sanitize before handing objects out.
         """
-        key = self._cache_key()
+        key = self._cache_key(name)
         hit = self._scan_cache.get(name)
-        if key is not None and hit is not None and hit[0] == key:
-            return hit[1]
+        now = time.monotonic()
+        if key is not None and hit is not None and hit[0] == key and now - hit[1] < SCAN_CACHE_TTL_SECONDS:
+            return hit[2]
         items = await load()
-        if key is not None and self._cache_key() == key:
-            self._scan_cache[name] = (key, items)
+        if key is not None and self._cache_key(name) == key:
+            self._scan_cache[name] = (key, now, items)
         return items
 
     async def _ensure_init(self) -> None:
