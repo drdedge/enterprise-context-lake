@@ -126,6 +126,16 @@ Supported adapter values:
 - `retrieval`: `lexical_manifest` | `facet_graph`
 - `llm_mode`: `auto` | `gemini` | `deterministic`
 
+## LangSmith Context Hub Export & Import
+
+Public-side context can be exported to LangSmith Context Hub at a named release, and edits made there come back as proposals ([ADR-008](docs/adr/ADR-008-context-hub-export-import.md)). Private-side, above-the-wall and personal context never leaves the lake. Release managers only.
+
+- `GET /api/v1/context-hub/releases/{id}/plan`: what would be exported, and what is refused and why.
+- `POST /api/v1/context-hub/releases/{id}/export` with `{"dry_run": false}`: push the release and record the Context Hub commits on it. Exporting the first release is the one-off migration.
+- `POST /api/v1/context-hub/import` with `{"repo_handle": "context-lake-firm-all"}`: file the repo's knowledge edits as a proposed change set for a steward.
+
+By default this writes to a local folder emulation (`<runtime_dir>/context_hub`, or `CONTEXT_HUB_FOLDER`). Set `CONTEXT_HUB_BACKEND=langsmith` with `LANGSMITH_API_KEY` (and optionally `CONTEXT_HUB_OWNER`, `CONTEXT_HUB_REPO_PREFIX`) to use LangSmith.
+
 ## Documentation
 
 ### Architecture Decision Records (ADRs)
