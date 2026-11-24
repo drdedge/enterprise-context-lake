@@ -291,14 +291,14 @@ async def tool_read(
     )
     positions = await runtime.store.list_positions(
         principal=principal,
-        vehicle_id=entity.entity_id if entity.entity_type.value == "legal_vehicle" else None,
-        issuer_id=entity.entity_id if entity.entity_type.value == "issuer" else None,
+        vehicle_id=entity.entity_id if entity.entity_type == "legal_vehicle" else None,
+        issuer_id=entity.entity_id if entity.entity_type == "issuer" else None,
     )
-    if entity.entity_type.value not in ("legal_vehicle", "issuer"):
+    if entity.entity_type not in ("legal_vehicle", "issuer"):
         positions = []
     coverages = (
         await runtime.store.list_coverages(principal=principal, issuer_id=entity.entity_id)
-        if entity.entity_type.value == "issuer"
+        if entity.entity_type == "issuer"
         else []
     )
 

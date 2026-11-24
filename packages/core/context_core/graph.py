@@ -293,10 +293,12 @@ class GraphProjectionService:
                 )
             )
 
+        vocab_index = await self.store.vocabulary_index() if hasattr(self.store, "vocabulary_index") else None
         return {
             "as_of": eff_as_of,
             "recorded_as_of": eff_rec,
             "entities": entity_map,
+            "vocab_index": vocab_index,
             "key_to_id": key_to_id,
             "claims": claims,
             "claim_by_id": claim_by_id,
@@ -330,31 +332,31 @@ class GraphProjectionService:
                 t = topic_by_slug.get(slug)
                 return f"cluster:topic:{slug}", (t.pref_label if t else slug), "topic"
             return (
-                f"cluster:type:{entity.entity_type.value}",
-                entity.entity_type.value.replace("_", " ").title(),
+                f"cluster:type:{entity.entity_type}",
+                entity.entity_type.replace("_", " ").title(),
                 "entity_type",
             )
         if lens in ("app", "skill", "app_skill"):
             if entity.entity_type in (EntityType.app, EntityType.skill):
                 return "cluster:ops:apps-skills", "Apps & Skills", "app_skill"
-            if entity.entity_type.value in FUND_ENTITY_TYPES:
+            if entity.entity_type in FUND_ENTITY_TYPES:
                 return "cluster:funds:hierarchy", "Fund Hierarchy", "fund_hierarchy"
-            return f"cluster:type:{entity.entity_type.value}", entity.entity_type.value.replace("_", " ").title(), "entity_type"
+            return f"cluster:type:{entity.entity_type}", entity.entity_type.replace("_", " ").title(), "entity_type"
         if lens == "fund_hierarchy":
-            return f"cluster:fund:{entity.entity_type.value}", entity.entity_type.value.replace("_", " ").title(), "fund_hierarchy"
+            return f"cluster:fund:{entity.entity_type}", entity.entity_type.replace("_", " ").title(), "fund_hierarchy"
         if lens == "issuer":
             cov_status = entity.attributes.get("coverage_status")
             if cov_status:
                 return f"cluster:coverage:{cov_status}", f"Coverage: {str(cov_status).title()}", "coverage"
-            return f"cluster:market:{entity.entity_type.value}", entity.entity_type.value.replace("_", " ").title(), "issuer"
+            return f"cluster:market:{entity.entity_type}", entity.entity_type.replace("_", " ").title(), "issuer"
         if lens == "project":
             if entity.entity_type == EntityType.project:
                 return f"cluster:project:{entity.canonical_key}", entity.display_name, "project"
-            return f"cluster:type:{entity.entity_type.value}", entity.entity_type.value.replace("_", " ").title(), "project"
+            return f"cluster:type:{entity.entity_type}", entity.entity_type.replace("_", " ").title(), "project"
         if lens == "personal":
             return "cluster:personal:my-context", "My Context & Watchlist", "personal"
         # "entity" or fallback
-        return f"cluster:type:{entity.entity_type.value}", entity.entity_type.value.replace("_", " ").title(), "entity_type"
+        return f"cluster:type:{entity.entity_type}", entity.entity_type.replace("_", " ").title(), "entity_type"
 
     def _lens_filter_entity_ids(
         self,
@@ -367,17 +369,17 @@ class GraphProjectionService:
         if lens in ("topic", "entity"):
             return set(entity_map.keys())
         if lens == "fund_hierarchy":
-            seeds = {eid for eid, e in entity_map.items() if e.entity_type.value in FUND_ENTITY_TYPES}
+            seeds = {eid for eid, e in entity_map.items() if e.entity_type in FUND_ENTITY_TYPES}
             # Include 1-hop connected share classes/skills/commitments plus deliberate orphans? Keep fund hierarchy crisp
             out = set(seeds)
             for edge in edges:
-                if edge.source in seeds and entity_map[edge.target].entity_type.value in FUND_ENTITY_TYPES | SKILL_APP_ENTITY_TYPES:
+                if edge.source in seeds and entity_map[edge.target].entity_type in FUND_ENTITY_TYPES | SKILL_APP_ENTITY_TYPES:
                     out.add(edge.target)
-                if edge.target in seeds and entity_map[edge.source].entity_type.value in FUND_ENTITY_TYPES | SKILL_APP_ENTITY_TYPES | CLIENT_ENTITY_TYPES:
+                if edge.target in seeds and entity_map[edge.source].entity_type in FUND_ENTITY_TYPES | SKILL_APP_ENTITY_TYPES | CLIENT_ENTITY_TYPES:
                     out.add(edge.source)
             return out
         if lens in ("app", "skill", "app_skill"):
-            seeds = {eid for eid, e in entity_map.items() if e.entity_type.value in SKILL_APP_ENTITY_TYPES}
+            seeds = {eid for eid, e in entity_map.items() if e.entity_type in SKILL_APP_ENTITY_TYPES}
             out = set(seeds)
             for edge in edges:
                 if edge.source in seeds:
@@ -389,7 +391,7 @@ class GraphProjectionService:
             seeds = {
                 eid
                 for eid, e in entity_map.items()
-                if e.entity_type.value in MARKET_ENTITY_TYPES | {EntityType.legal_party.value}
+                if e.entity_type in MARKET_ENTITY_TYPES | {EntityType.legal_party.value}
             }
             out = set(seeds)
             for edge in edges:
@@ -435,8 +437,14 @@ class GraphProjectionService:
         keep = set(candidate_ids)
         if filters is not None:
             if filters.entity_types:
-                allowed_types = set(filters.entity_types)
-                keep = {eid for eid in keep if entities[eid].entity_type.value in allowed_types}
+                # A broad type also matches its narrower types in the editable taxonomy (ADR-008)
+                vocab_index = state.get("vocab_index")
+                allowed_types = (
+                    vocab_index.expand("entity_type", filters.entity_types)
+                    if vocab_index is not None
+                    else set(filters.entity_types)
+                ) or set()
+                keep = {eid for eid in keep if entities[eid].entity_type in allowed_types}
             if filters.topic_slug:
                 slug = filters.topic_slug.strip().lower()
                 # Include child topics if filtering by a parent topic (e.g., "financial" or "leverage-covenants")
@@ -673,7 +681,7 @@ class GraphProjectionService:
                     id=eid,
                     canonical_key=ent.canonical_key,
                     label=ent.display_name,
-                    entity_type=ent.entity_type.value,
+                    entity_type=ent.entity_type,
                     cluster_id=cid,
                     wall_side=ent.wall_side,
                     degree_in=din,
@@ -998,11 +1006,11 @@ class GraphProjectionService:
 
         for eid in visited:
             ent = entities[eid]
-            if ent.entity_type.value in FUND_ENTITY_TYPES:
+            if ent.entity_type in FUND_ENTITY_TYPES:
                 layer_funds.add(eid)
-            elif ent.entity_type.value in CLIENT_ENTITY_TYPES:
+            elif ent.entity_type in CLIENT_ENTITY_TYPES:
                 layer_clients.add(eid)
-            elif ent.entity_type.value in SKILL_APP_ENTITY_TYPES:
+            elif ent.entity_type in SKILL_APP_ENTITY_TYPES:
                 layer_skills_apps.add(eid)
 
         # Personal watchlist hits ONLY when OBO + direct channel (ADR-002 / ADR-003)
@@ -1040,8 +1048,8 @@ class GraphProjectionService:
                     id=eid,
                     canonical_key=ent.canonical_key,
                     label=ent.display_name,
-                    entity_type=ent.entity_type.value,
-                    cluster_id=f"cluster:impact:{ent.entity_type.value}",
+                    entity_type=ent.entity_type,
+                    cluster_id=f"cluster:impact:{ent.entity_type}",
                     wall_side=ent.wall_side,
                     degree_in=deg_in[eid],
                     degree_out=deg_out[eid],

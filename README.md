@@ -134,6 +134,8 @@ Supported adapter values:
 - [ADR-003: Security, MNPI Walls, Split Claim/Evidence ACLs, Identity & Receipts](docs/adr/ADR-003-security-mnpi-acls-and-identity.md)
 - [ADR-004: Dual FastMCP Surface, Server-Side Code Mode & DeepAgents Harness](docs/adr/ADR-004-dual-mcp-codemode-and-agents.md)
 - [ADR-005: Minimalist Obsidian UX, Diagnostic Graph & Shared `/api/v1` Contract](docs/adr/ADR-005-minimalist-ux-and-diagnostic-graph.md)
+- [ADR-007: Git-like Version Control for Context](docs/adr/ADR-007-context-version-control.md)
+- [ADR-008: Editable Taxonomy and Access Checks in the Query](docs/adr/ADR-008-editable-taxonomy-and-acl-sets.md)
 
 ### Operational Runbooks
 - [01 — Claude Code MCP Integration](docs/runbooks/01-claude-code-mcp.md)

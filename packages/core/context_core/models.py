@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from context_core.compression import ensure_utc, to_posix_path, utc_now
+from context_core.vocabulary import normalize_term_key
 
 
 def _clone_value(value: Any) -> Any:
@@ -49,6 +50,8 @@ def clone_model(model: Any) -> Any:
 
 
 class EntityType(str, Enum):
+    """Entity types seeded into the entity_type vocabulary. The live list is in the store (ADR-008)."""
+
     # Investment Product Hierarchy
     strategy = "strategy"
     fund_family = "fund_family"
@@ -166,6 +169,26 @@ ChannelMode = Literal["direct", "shared"]
 REDACTED_EVIDENCE_LABEL = "Restricted — Request Access"
 
 
+def _vocab_key(value: Any) -> str:
+    key = normalize_term_key(value)
+    if not key:
+        raise ValueError("Vocabulary value must not be empty")
+    return key
+
+
+def _opt_vocab_key(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return _vocab_key(value)
+
+
+# A value from a steward-editable vocabulary (context_core.vocabulary). Any non-empty value is
+# accepted and normalised (lower case, underscores); unknown values are registered as proposed terms
+# by the store instead of being rejected.
+VocabKey = Annotated[str, BeforeValidator(_vocab_key)]
+OptVocabKey = Annotated[str | None, BeforeValidator(_opt_vocab_key)]
+
+
 def _utc_validator(value: datetime | str | None) -> datetime | None:
     return ensure_utc(value)
 
@@ -227,7 +250,7 @@ class Entity(BaseModel):
     """Canonical Plane 1 entity (investment hierarchy, market/credit, party/client, operational)."""
 
     entity_id: str
-    entity_type: EntityType
+    entity_type: VocabKey  # entity_type vocabulary (ADR-008); EntityType lists the seeded values
     canonical_key: str
     display_name: str
     aliases: list[str] = Field(default_factory=list)
@@ -257,7 +280,7 @@ class EntityIdentifier(BaseModel):
 
     id: str
     entity_id: str
-    scheme: IdentifierScheme
+    scheme: VocabKey  # identifier_scheme vocabulary
     identifier_value: str
     authority: str = ""
     is_primary: bool = True
@@ -283,7 +306,7 @@ class EntityLineageEvent(BaseModel):
     event_id: str
     source_entity_id: str
     target_entity_id: str
-    event_type: LineageEventType
+    event_type: VocabKey  # lineage_event_type vocabulary
     effective_date: datetime
     recorded_at: datetime = Field(default_factory=utc_now)
     summary: str = ""
@@ -317,7 +340,7 @@ class Position(BaseModel):
     vehicle_entity_id: str
     instrument_entity_id: str
     issuer_entity_id: str
-    position_type: PositionType = "long"
+    position_type: VocabKey = "long"  # position_type vocabulary
     quantity: float | None = None
     market_value: float | None = None
     currency: str = "USD"
@@ -340,8 +363,8 @@ class Coverage(BaseModel):
     coverage_id: str
     analyst_entity_id: str
     issuer_entity_id: str
-    coverage_role: CoverageRole
-    coverage_status: CoverageStatus
+    coverage_role: VocabKey  # coverage_role vocabulary
+    coverage_status: VocabKey  # coverage_status vocabulary
     valid_from: datetime = Field(default_factory=utc_now)
     valid_to: datetime | None = None
     wall_side: WallSide = WallSide.public_side
@@ -376,14 +399,14 @@ class ClaimFacets(BaseModel):
     domain_nature: DomainNature = "non_financial"
     modality: Modality = "qualitative"
     numeric_value: float | None = None
-    unit: str | None = None
+    unit: OptVocabKey = None
     currency: str | None = None
-    accounting_basis: str | None = None
-    epistemic_temporal: EpistemicTemporal = "actual"
-    actual_stage: ActualStage | None = None
-    periodicity: Periodicity = "evergreen"
+    accounting_basis: OptVocabKey = None
+    epistemic_temporal: VocabKey = "actual"
+    actual_stage: OptVocabKey = None
+    periodicity: VocabKey = "evergreen"
     fiscal_period: str | None = None
-    ingestion_channel: IngestionChannel = "human_authored"
+    ingestion_channel: VocabKey = "human_authored"
 
 
 class Provenance(BaseModel):

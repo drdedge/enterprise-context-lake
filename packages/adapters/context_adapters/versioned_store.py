@@ -46,6 +46,7 @@ from context_core.versioning import (
 )
 
 from context_adapters.version_ledger import SqliteVersionLedger
+from context_core.vocabulary import VocabTerm
 
 # The authenticated caller of the current request, set by the API's principal dependency so that
 # writes made without a principal argument (topics, entities) are still attributed.
@@ -184,6 +185,21 @@ class VersionedStore:
             title=f"{c.predicate} on {c.subject_id}",
         )
 
+    def _record_vocab_term(self, t: VocabTerm, *, author: Principal | None = None, op: str | None = None) -> None:
+        self._record(
+            "vocab_term", t.term_id, t.model_dump(mode="json"), wall_side=None, read_acl=None,
+            author=author, op=op,
+            title=f"Propose term {t.vocab}:{t.key}" if t.status == "proposed" else f"Update term {t.vocab}:{t.key}",
+        )
+
+    def _record_new_terms(self, author: Principal | None = None) -> None:
+        """Record terms the store registered as proposed while handling the last write (ADR-008)."""
+        drain = getattr(self._inner, "drain_new_vocab_terms", None)
+        if drain is None:
+            return
+        for term in drain():
+            self._record_vocab_term(term, author=author)
+
     def _record_memory(self, m: MemoryRecord, *, author: Principal | None = None, op: str | None = None) -> None:
         self._record(
             "memory", m.memory_id, m.model_dump(mode="json"), wall_side=None, read_acl=None,
@@ -239,6 +255,40 @@ class VersionedStore:
     async def upsert_entity(self, entity: Entity) -> Entity:
         result = await self._inner.upsert_entity(entity)
         self._record_entity(result)
+        self._record_new_terms()
+        return result
+
+    async def upsert_vocab_term(self, term: VocabTerm) -> VocabTerm:
+        actor = current_actor.get()
+        if self._gated() and actor is not None:
+            assert self._gate is not None
+            await self._gate(
+                title=f"Term: {term.vocab}:{term.key}",
+                items=[ChangeItemInput(record_type="vocab_term", op="upsert", record_id=term.term_id, payload=term.model_dump(mode="json"))],
+                principal=actor,
+            )
+        result = await self._inner.upsert_vocab_term(term)
+        self._record_vocab_term(result, author=actor)
+        return result
+
+    async def upsert_identifier(self, ident: Any) -> Any:
+        result = await self._inner.upsert_identifier(ident)
+        self._record_new_terms()
+        return result
+
+    async def add_lineage_event(self, event: Any) -> Any:
+        result = await self._inner.add_lineage_event(event)
+        self._record_new_terms()
+        return result
+
+    async def upsert_position(self, pos: Any) -> Any:
+        result = await self._inner.upsert_position(pos)
+        self._record_new_terms()
+        return result
+
+    async def upsert_coverage(self, cov: Any) -> Any:
+        result = await self._inner.upsert_coverage(cov)
+        self._record_new_terms()
         return result
 
     async def upsert_knowledge_item(self, item: KnowledgeItem) -> KnowledgeItem:
@@ -274,6 +324,7 @@ class VersionedStore:
     async def seed_claim_raw(self, claim: Claim) -> Claim:
         result = await self._inner.seed_claim_raw(claim)
         self._record_claim(result, op="baseline")
+        self._record_new_terms()
         return result
 
     async def write_claim(self, payload: ClaimCreateInput, *, principal: Principal) -> ClaimWriteResult:
@@ -291,6 +342,7 @@ class VersionedStore:
             )
         result = await self._inner.write_claim(payload, principal=principal)
         self._record_claim(await self._raw_claim(result.claim), author=principal)
+        self._record_new_terms(author=principal)
         return result
 
     async def update_claim(
@@ -315,6 +367,7 @@ class VersionedStore:
                 )
         result = await self._inner.update_claim(claim_id, patch, principal=principal)
         self._record_claim(await self._raw_claim(result.claim), author=principal, op="update")
+        self._record_new_terms(author=principal)
         return result
 
     async def resolve_conflict(
@@ -372,6 +425,8 @@ class VersionedStore:
             return rec.memory_id, rec.model_dump(mode="json"), None, None, rec.user_id
         if record_type == "watchlist":
             return rec.user_id, rec.model_dump(mode="json", exclude={"alerts"}), None, None, rec.user_id
+        if record_type == "vocab_term":
+            return rec.term_id, rec.model_dump(mode="json"), None, None, None
         raise ValueError(record_type)
 
     async def import_state(self, state: dict[str, Any], *, reset_epochs: bool = False) -> None:
@@ -387,7 +442,13 @@ class VersionedStore:
             "memory": state.get("memories", []),
             "watchlist": state.get("watchlists", []),
             "claim": state.get("claims", []),
+            # Every term after the import: the defaults, imported terms and terms proposed for
+            # values first seen in this import
+            "vocab_term": await self._inner.list_vocab_terms() if hasattr(self._inner, "list_vocab_terms") else [],
         }
+        drain = getattr(self._inner, "drain_new_vocab_terms", None)
+        if drain is not None:
+            drain()
         if not any(sources.values()):
             return
         first_time = not any(self._ledger.latest_hashes(rt) for rt in sources)

@@ -26,6 +26,7 @@ from sqlalchemy import (
     Text,
     delete,
     event,
+    or_,
     select,
     text,
 )
@@ -81,7 +82,9 @@ from context_core.models import (
     WatchlistRecord,
     WatchlistUpdateInput,
 )
-from context_core.policy import PolicyEngine, sanitize_uri_secrets
+from context_core.policy import PolicyEngine, sanitize_uri_secrets, wall_allows
+from context_core.vocabulary import VocabTerm, default_terms
+from context_adapters._vocab_common import VocabularyStoreMixin
 from context_adapters._store_common import (
     apply_topic_patch,
     check_toctou_epoch,
@@ -133,6 +136,8 @@ t_entities = Table(
     Column("status", String(32), nullable=False),
     Column("created_at", String(64), nullable=False),
     Column("updated_at", String(64), nullable=False),
+    # Deduplicated (wall_side, read groups) set, so reads filter by access inside the query (ADR-008)
+    Column("acl_set_id", Integer, nullable=True, index=True),
 )
 
 t_entity_identifiers = Table(
@@ -236,6 +241,7 @@ t_claims = Table(
     Column("superseded_at", String(64), nullable=True),
     Column("superseded_by", String(128), nullable=True),
     Column("created_by", String(128), nullable=False),
+    Column("acl_set_id", Integer, nullable=True, index=True),
 )
 
 t_conflict_sets = Table(
@@ -369,6 +375,50 @@ t_receipts = Table(
     Column("created_at", String(64), nullable=False),
 )
 
+# Steward-editable vocabularies: entity types, identifier schemes, predicates, tag values (ADR-008)
+t_vocab_terms = Table(
+    "vocab_terms",
+    metadata,
+    Column("term_id", String(320), primary_key=True),
+    Column("vocab", String(64), nullable=False, index=True),
+    Column("key", String(256), nullable=False),
+    Column("label", String(512), nullable=False),
+    Column("parent_key", String(256), nullable=True),
+    Column("description", Text, nullable=False),
+    Column("aliases_json", Text, nullable=False),
+    Column("status", String(32), nullable=False, index=True),
+    Column("merged_into_key", String(256), nullable=True),
+    Column("attributes_json", Text, nullable=False),
+    Column("owner_group", String(128), nullable=False),
+    Column("created_by", String(128), nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+)
+
+# One row per distinct (wall_side, read groups) combination. Records point at it with acl_set_id,
+# and a caller's readable sets are found with one indexed join on their groups (ADR-008).
+t_acl_sets = Table(
+    "acl_sets",
+    metadata,
+    Column("acl_set_id", Integer, primary_key=True, autoincrement=True),
+    Column("signature", String(1024), nullable=False, unique=True),
+    Column("wall_side", String(32), nullable=False, index=True),
+)
+
+t_acl_set_groups = Table(
+    "acl_set_groups",
+    metadata,
+    Column("acl_set_id", Integer, primary_key=True),
+    Column("group_name", String(256), primary_key=True, index=True),
+)
+
+
+def acl_signature(wall_side: Any, groups: Sequence[str]) -> tuple[str, str, list[str]]:
+    """(signature, wall_side, sorted unique groups) for an ACL set."""
+    wall = wall_side.value if hasattr(wall_side, "value") else str(wall_side)
+    clean = sorted({str(g) for g in groups if g})
+    return wall + "|" + "\x1f".join(clean), wall, clean
+
 
 def _sqlite_url(db_path: str | Path | None) -> str:
     if db_path is None or str(db_path) == ":memory:":
@@ -402,7 +452,7 @@ class _ReleaseHookLock(asyncio.Lock):
             super().release()
 
 
-class SqliteBitemporalStore:
+class SqliteBitemporalStore(VocabularyStoreMixin):
     """SQLAlchemy 2.x async bitemporal store implementing StorePort + FTS5 + Windows lock hygiene."""
 
     def __init__(
@@ -454,6 +504,7 @@ class SqliteBitemporalStore:
         self._version_conn: sqlite3.Connection | None = None
         self._version_identity: tuple[int, int] | None = None
         self._version_lock = threading.Lock()
+        self._new_vocab_terms: list[VocabTerm] = []
 
     def _make_engine(self, *, pooled: bool) -> AsyncEngine:
         engine_kwargs: dict[str, Any] = {"future": True}
@@ -566,6 +617,9 @@ class SqliteBitemporalStore:
                         self._fts_enabled = True
                     except Exception:
                         self._fts_enabled = False
+                await self._migrate_acl_columns(conn)
+                if (await conn.execute(select(t_vocab_terms.c.term_id).limit(1))).first() is None:
+                    await self._vocab_save_conn(conn, default_terms())
                 row = (await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))).first()
                 if row is None:
                     await conn.execute(
@@ -677,6 +731,159 @@ class SqliteBitemporalStore:
     async def _ensure_init(self) -> None:
         if not self._initialized:
             await self.initialize()
+
+    # ------------------------------------------------------------------
+    # ACL sets: access checks inside the query (ADR-008)
+    # ------------------------------------------------------------------
+
+    async def _migrate_acl_columns(self, conn: Any) -> None:
+        """Add acl_set_id to databases created before ADR-008 and fill it for every row."""
+        memo: dict[str, int] = {}
+        if self._is_sqlite:
+            for table in ("entities", "claims"):
+                cols = {r[1] for r in (await conn.execute(text(f"PRAGMA table_info({table})"))).fetchall()}
+                if "acl_set_id" not in cols:
+                    await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN acl_set_id INTEGER"))
+                    await conn.execute(
+                        text(f"CREATE INDEX IF NOT EXISTS ix_{table}_acl_set_id ON {table} (acl_set_id)")
+                    )
+        for r in (
+            await conn.execute(
+                select(t_entities.c.entity_id, t_entities.c.wall_side, t_entities.c.read_acl_groups_json).where(
+                    t_entities.c.acl_set_id.is_(None)
+                )
+            )
+        ).fetchall():
+            acl_id = await self._acl_set_id_conn(conn, r.wall_side, json.loads(r.read_acl_groups_json), memo)
+            await conn.execute(t_entities.update().where(t_entities.c.entity_id == r.entity_id).values(acl_set_id=acl_id))
+        for r in (
+            await conn.execute(select(t_claims.c.claim_id, t_claims.c.acl_json).where(t_claims.c.acl_set_id.is_(None)))
+        ).fetchall():
+            acl = json.loads(r.acl_json)
+            acl_id = await self._acl_set_id_conn(
+                conn, acl.get("wall_side", "public_side"), acl.get("read_acl_groups") or [], memo
+            )
+            await conn.execute(t_claims.update().where(t_claims.c.claim_id == r.claim_id).values(acl_set_id=acl_id))
+
+    async def _acl_set_id_conn(
+        self, conn: Any, wall_side: Any, groups: Sequence[str], memo: dict[str, int] | None = None
+    ) -> int:
+        """Get or create the ACL set for (wall_side, groups). Call inside a write transaction.
+
+        ``memo`` caches lookups for the length of one transaction (bulk import). Nothing is cached
+        across transactions, so a rolled-back insert or a replaced database file can't leave a
+        stale id behind.
+        """
+        sig, wall, clean = acl_signature(wall_side, groups)
+        if memo is not None and sig in memo:
+            return memo[sig]
+        row = (await conn.execute(select(t_acl_sets.c.acl_set_id).where(t_acl_sets.c.signature == sig))).first()
+        if row is None:
+            res = await conn.execute(t_acl_sets.insert().values(signature=sig, wall_side=wall))
+            acl_id = int(res.inserted_primary_key[0])
+            if clean:
+                await conn.execute(
+                    t_acl_set_groups.insert(), [{"acl_set_id": acl_id, "group_name": g} for g in clean]
+                )
+        else:
+            acl_id = int(row.acl_set_id)
+        if memo is not None:
+            memo[sig] = acl_id
+        return acl_id
+
+    @staticmethod
+    def _readable_acl_sets_query(principal: Principal) -> Any:
+        """SELECT of the acl_set_ids this caller may read: the wall matrix plus any-of group match.
+
+        A set with no groups never matches, which keeps the fail-closed rule of PolicyEngine.
+        """
+        walls = [w.value for w in WallSide if wall_allows(principal.wall_side, w)]
+        groups = sorted(principal.groups)
+        return (
+            select(t_acl_sets.c.acl_set_id)
+            .join(t_acl_set_groups, t_acl_set_groups.c.acl_set_id == t_acl_sets.c.acl_set_id)
+            .where(t_acl_sets.c.wall_side.in_(walls))
+            .where(t_acl_set_groups.c.group_name.in_(groups or ["\x00no-groups"]))
+            .distinct()
+        )
+
+    async def _readable_acl_set_ids(self, principal: Principal) -> set[int]:
+        async with self._engine.connect() as conn:
+            return {int(r[0]) for r in (await conn.execute(self._readable_acl_sets_query(principal))).fetchall()}
+
+    # ------------------------------------------------------------------
+    # Vocabulary storage primitives (ADR-008)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _vocab_row(t: VocabTerm) -> dict[str, Any]:
+        return dict(
+            term_id=t.term_id,
+            vocab=t.vocab,
+            key=t.key,
+            label=t.label,
+            parent_key=t.parent_key,
+            description=t.description,
+            aliases_json=json.dumps(t.aliases),
+            status=t.status,
+            merged_into_key=t.merged_into_key,
+            attributes_json=json.dumps(t.attributes),
+            owner_group=t.owner_group,
+            created_by=t.created_by,
+            created_at=format_utc(t.created_at),
+            updated_at=format_utc(t.updated_at),
+        )
+
+    @staticmethod
+    def _row_to_term(r: Any) -> VocabTerm:
+        return VocabTerm(
+            vocab=r.vocab,
+            key=r.key,
+            label=r.label,
+            parent_key=r.parent_key,
+            description=r.description,
+            aliases=json.loads(r.aliases_json),
+            status=r.status,
+            merged_into_key=r.merged_into_key,
+            attributes=json.loads(r.attributes_json),
+            owner_group=r.owner_group,
+            created_by=r.created_by,
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+        )
+
+    async def _vocab_save_conn(self, conn: Any, terms: Sequence[VocabTerm]) -> None:
+        ids = [t.term_id for t in terms]
+        for n in range(0, len(ids), 500):
+            await conn.execute(delete(t_vocab_terms).where(t_vocab_terms.c.term_id.in_(ids[n : n + 500])))
+        rows = [self._vocab_row(t) for t in terms]
+        for n in range(0, len(rows), 1000):
+            await conn.execute(t_vocab_terms.insert(), rows[n : n + 1000])
+
+    async def _vocab_load(self) -> list[VocabTerm]:
+        await self._ensure_init()
+        async with self._engine.connect() as conn:
+            return [self._row_to_term(r) for r in (await conn.execute(select(t_vocab_terms))).fetchall()]
+
+    async def _vocab_count(self) -> int:
+        await self._ensure_init()
+        async with self._engine.connect() as conn:
+            return len((await conn.execute(select(t_vocab_terms.c.term_id))).fetchall())
+
+    async def _vocab_save(self, terms: Sequence[VocabTerm]) -> None:
+        if not terms:
+            return
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await self._vocab_save_conn(conn, terms)
+
+    async def _vocab_replace_all(self, terms: Sequence[VocabTerm]) -> None:
+        await self._ensure_init()
+        async with self._write_lock:
+            async with self._engine.begin() as conn:
+                await conn.execute(delete(t_vocab_terms))
+                await self._vocab_save_conn(conn, terms)
 
     async def _effective_principal(self, principal: Principal) -> Principal:
         if principal.revoked:
@@ -846,7 +1053,7 @@ class SqliteBitemporalStore:
     def _row_to_entity(row: Any) -> Entity:
         return Entity(
             entity_id=row.entity_id,
-            entity_type=EntityType(row.entity_type),
+            entity_type=row.entity_type,
             canonical_key=row.canonical_key,
             display_name=row.display_name,
             aliases=json.loads(row.aliases_json),
@@ -1055,10 +1262,11 @@ class SqliteBitemporalStore:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _entity_row(entity: Entity) -> dict[str, Any]:
+    def _entity_row(entity: Entity, acl_set_id: int | None = None) -> dict[str, Any]:
         return dict(
+            acl_set_id=acl_set_id,
             entity_id=entity.entity_id,
-            entity_type=entity.entity_type.value,
+            entity_type=entity.entity_type,
             canonical_key=entity.canonical_key,
             display_name=entity.display_name,
             aliases_json=json.dumps(entity.aliases),
@@ -1079,12 +1287,13 @@ class SqliteBitemporalStore:
             "entity",
             entity.entity_id,
             f"{entity.display_name} {entity.canonical_key}",
-            f"{' '.join(entity.aliases)} {entity.description} {entity.entity_type.value}",
+            f"{' '.join(entity.aliases)} {entity.description} {entity.entity_type}",
         )
 
     async def _upsert_entity_conn(self, conn: Any, entity: Entity) -> None:
         await conn.execute(delete(t_entities).where(t_entities.c.entity_id == entity.entity_id))
-        await conn.execute(t_entities.insert().values(**self._entity_row(entity)))
+        acl_id = await self._acl_set_id_conn(conn, entity.wall_side, entity.read_acl_groups)
+        await conn.execute(t_entities.insert().values(**self._entity_row(entity, acl_id)))
         await self._fts_upsert(conn, *self._entity_fts(entity))
 
     async def upsert_entity(self, entity: Entity) -> Entity:
@@ -1093,6 +1302,7 @@ class SqliteBitemporalStore:
             async with self._engine.begin() as conn:
                 await self._upsert_entity_conn(conn, entity)
                 await self._bump_data_epoch_conn(conn, reason=f"upsert_entity:{entity.entity_id}", actor="system")
+        await self._register_record_terms("entities", entity)
         return entity
 
     async def _get_entity_raw(self, conn: Any, entity_id_or_key: str) -> Entity | None:
@@ -1129,17 +1339,37 @@ class SqliteBitemporalStore:
         if eff.revoked:
             return []
 
-        async def _load_entities() -> list[Entity]:
+        # A broad type also returns its narrower types (party -> organisation -> issuer ...)
+        type_set = await self.expand_entity_types(entity_types)
+        readable = self._readable_acl_sets_query(eff)
+
+        if topic_slug is None and limit is not None:
+            # Paged read: access, type, order and page all run inside the query, so a page is
+            # always full and the cost follows what the caller can see (ADR-008).
+            stmt = select(t_entities).where(t_entities.c.acl_set_id.in_(readable))
+            if type_set is not None:
+                stmt = stmt.where(t_entities.c.entity_type.in_(sorted(type_set)))
+            stmt = stmt.order_by(t_entities.c.canonical_key.asc()).limit(limit).offset(offset)
+            async with self._engine.connect() as c:
+                rows = (await c.execute(stmt)).fetchall()
+            # Defence in depth: the policy engine still checks every row it hands out
+            return [ent for r in rows if self.policy.can_read_entity(eff, (ent := self._row_to_entity(r)))]
+
+        # Whole-list reads (graph, retrieval) reuse the shared scan cache; the caller's readable ACL
+        # sets still come from the database, so the access decision is the same one the query makes.
+        async def _load_entities() -> list[tuple[int | None, Entity]]:
             async with self._engine.connect() as c:
                 stmt = select(t_entities).order_by(t_entities.c.canonical_key.asc())
-                return [self._row_to_entity(r) for r in (await c.execute(stmt)).fetchall()]
+                return [(r.acl_set_id, self._row_to_entity(r)) for r in (await c.execute(stmt)).fetchall()]
 
         all_entities = await self._cached_scan("entities", _load_entities)
-        type_set = set(entity_types) if entity_types else None
+        async with self._engine.connect() as c:
+            readable_ids = {int(r[0]) for r in (await c.execute(readable)).fetchall()}
         authorized = [
             ent
-            for ent in all_entities
-            if (type_set is None or ent.entity_type.value in type_set)
+            for acl_id, ent in all_entities
+            if acl_id in readable_ids
+            and (type_set is None or ent.entity_type in type_set)
             and self.policy.can_read_entity(eff, ent)
         ]
         if topic_slug:
@@ -1206,6 +1436,7 @@ class SqliteBitemporalStore:
                         superseded_at=format_utc(ident.superseded_at),
                     )
                 )
+        await self._register_record_terms("identifiers", ident)
         return ident
 
     async def list_identifiers(
@@ -1286,6 +1517,7 @@ class SqliteBitemporalStore:
                         read_acl_groups_json=json.dumps(event.read_acl_groups),
                     )
                 )
+        await self._register_record_terms("lineage_events", event)
         return event
 
     async def list_lineage_events(
@@ -1357,6 +1589,7 @@ class SqliteBitemporalStore:
                         read_acl_groups_json=json.dumps(pos.read_acl_groups),
                     )
                 )
+        await self._register_record_terms("positions", pos)
         return pos
 
     async def list_positions(
@@ -1403,6 +1636,7 @@ class SqliteBitemporalStore:
                         read_acl_groups_json=json.dumps(cov.read_acl_groups),
                     )
                 )
+        await self._register_record_terms("coverages", cov)
         return cov
 
     async def list_coverages(
@@ -1472,8 +1706,9 @@ class SqliteBitemporalStore:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _claim_row(claim: Claim) -> dict[str, Any]:
+    def _claim_row(claim: Claim, acl_set_id: int | None = None) -> dict[str, Any]:
         return dict(
+            acl_set_id=acl_set_id,
             claim_id=claim.claim_id,
             subject_id=claim.subject_id,
             predicate=claim.predicate,
@@ -1510,7 +1745,8 @@ class SqliteBitemporalStore:
 
     async def _insert_claim_conn(self, conn: Any, claim: Claim) -> None:
         await conn.execute(delete(t_claims).where(t_claims.c.claim_id == claim.claim_id))
-        await conn.execute(t_claims.insert().values(**self._claim_row(claim)))
+        acl_id = await self._acl_set_id_conn(conn, claim.acl.wall_side, claim.acl.read_acl_groups)
+        await conn.execute(t_claims.insert().values(**self._claim_row(claim, acl_id)))
         await self._fts_upsert(conn, *self._claim_fts(claim))
 
     async def _upsert_conflict_conn(self, conn: Any, conflict: ConflictSet) -> None:
@@ -1554,6 +1790,7 @@ class SqliteBitemporalStore:
         async with self._write_lock:
             async with self._engine.begin() as conn:
                 await self._insert_claim_conn(conn, claim)
+        await self._register_record_terms("claims", claim)
         return claim
 
     async def seed_conflict_raw(self, conflict: ConflictSet) -> ConflictSet:
@@ -1708,6 +1945,7 @@ class SqliteBitemporalStore:
                     conn, reason=f"write_claim:{incoming.claim_id}", actor=eff.user_id
                 )
 
+        await self._register_record_terms("claims", incoming, created_by=eff.user_id)
         sanitized = self.policy.sanitize_claim_for_principal(eff, incoming) or incoming
         return ClaimWriteResult(
             claim=sanitized,
@@ -1786,6 +2024,7 @@ class SqliteBitemporalStore:
                     conn, reason=f"update_claim:{existing.claim_id}->{new_claim_id}", actor=eff.user_id
                 )
 
+        await self._register_record_terms("claims", updated_claim, created_by=eff.user_id)
         sanitized = self.policy.sanitize_claim_for_principal(eff, updated_claim) or updated_claim
         return ClaimWriteResult(
             claim=sanitized,
@@ -1844,13 +2083,18 @@ class SqliteBitemporalStore:
         )
         if unfiltered:
 
-            async def _load_claims() -> list[Claim]:
+            async def _load_claims() -> list[tuple[int | None, Claim]]:
                 async with self._engine.connect() as c:
-                    return [self._row_to_claim(r) for r in (await c.execute(select(t_claims))).fetchall()]
+                    return [(r.acl_set_id, self._row_to_claim(r)) for r in (await c.execute(select(t_claims))).fetchall()]
 
-            raw_claims: list[Claim] = await self._cached_scan("claims", _load_claims)
+            async with self._engine.connect() as c:
+                readable_ids = {int(r[0]) for r in (await c.execute(self._readable_acl_sets_query(eff))).fetchall()}
+            raw_claims: list[Claim] = [
+                clm for acl_id, clm in await self._cached_scan("claims", _load_claims) if acl_id in readable_ids
+            ]
         else:
             raw_claims = await self._query_claims_filtered(
+                principal=eff,
                 subject_ids=subject_ids,
                 object_entity_ids=object_entity_ids,
                 predicates=predicates,
@@ -1876,6 +2120,7 @@ class SqliteBitemporalStore:
     async def _query_claims_filtered(
         self,
         *,
+        principal: Principal,
         subject_ids: Sequence[str] | None,
         object_entity_ids: Sequence[str] | None,
         predicates: Sequence[str] | None,
@@ -1885,7 +2130,18 @@ class SqliteBitemporalStore:
         epistemic_statuses: Sequence[str] | None,
     ) -> list[Claim]:
         async with self._engine.connect() as conn:
-            stmt = select(t_claims)
+            # Access runs inside the query: wall side and read groups through acl_sets, plus the
+            # personal-scope rule (user and user_x_skill claims belong to one person). The policy
+            # engine re-checks and redacts each row afterwards.
+            stmt = select(t_claims).where(t_claims.c.acl_set_id.in_(self._readable_acl_sets_query(principal)))
+            scope_ok = [t_claims.c.scope_type.not_in(["user", "user_x_skill"])]
+            if self.policy.is_memory_allowed(principal):
+                scope_ok.append((t_claims.c.scope_type == "user") & (t_claims.c.scope_id == principal.user_id))
+                scope_ok.append(
+                    (t_claims.c.scope_type == "user_x_skill")
+                    & t_claims.c.scope_id.startswith(f"{principal.user_id}:", autoescape=True)
+                )
+            stmt = stmt.where(or_(*scope_ok))
             if subject_ids is not None:
                 if not subject_ids:
                     return []
@@ -2688,6 +2944,7 @@ class SqliteBitemporalStore:
         await self._ensure_init()
         async with self._write_lock:
             async with self._engine.connect() as conn:
+                vocab_terms = [self._row_to_term(r) for r in (await conn.execute(select(t_vocab_terms))).fetchall()]
                 epoch_row = (
                     await conn.execute(select(t_system_epochs).where(t_system_epochs.c.id == 1))
                 ).first()
@@ -2785,6 +3042,7 @@ class SqliteBitemporalStore:
             "watchlists": watchlists,
             "revoked_principals": revoked_principals,
             "receipts": receipts,
+            "vocab_terms": vocab_terms,
         }
 
     async def import_state(self, state: dict[str, Any], *, reset_epochs: bool = False) -> None:
@@ -2837,8 +3095,10 @@ class SqliteBitemporalStore:
                     fts_rows.pop((doc_type, doc_id), None)
                     fts_rows[(doc_type, doc_id)] = {"dt": doc_type, "did": doc_id, "title": title, "body": body}
 
+                acl_memo: dict[str, int] = {}
                 for e in state.get("entities", []):
-                    _add(t_entities, **self._entity_row(e))
+                    acl_id = await self._acl_set_id_conn(conn, e.wall_side, e.read_acl_groups, acl_memo)
+                    _add(t_entities, **self._entity_row(e, acl_id))
                     _fts(*self._entity_fts(e))
                 for ident in state.get("identifiers", []):
                     _add(
@@ -2912,7 +3172,8 @@ class SqliteBitemporalStore:
                         active=sb.active,
                     )
                 for c in state.get("claims", []):
-                    _add(t_claims, **self._claim_row(c))
+                    acl_id = await self._acl_set_id_conn(conn, c.acl.wall_side, c.acl.read_acl_groups, acl_memo)
+                    _add(t_claims, **self._claim_row(c, acl_id))
                     _fts(*self._claim_fts(c))
                 for cs in state.get("conflict_sets", []):
                     _add(t_conflict_sets, **self._conflict_row(cs))
@@ -3063,3 +3324,4 @@ class SqliteBitemporalStore:
                             last_actor="system:seed",
                         )
                     )
+        await self._import_vocab_state(state)
