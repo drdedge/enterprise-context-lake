@@ -31,6 +31,15 @@ function sendFrame(obj) {
   stdout.write(JSON.stringify(obj) + "\n");
 }
 
+// On Linux and macOS, writes to a pipe are asynchronous, so exiting straight after
+// write() drops whatever the pipe has not taken yet (anything over about 64 KiB).
+// Exit only once the final frame has been flushed.
+let finishing = false;
+function sendFinalFrameAndExit(obj) {
+  finishing = true;
+  stdout.write(JSON.stringify(obj) + "\n", () => exit(0));
+}
+
 function safeFormatArg(arg) {
   if (typeof arg === "string") return arg;
   try {
@@ -255,10 +264,9 @@ async function runUserCode(frame) {
         safeValue = String(value);
       }
     }
-    sendFrame({ type: "result", ok: true, value: safeValue, logs });
-    exit(0);
+    sendFinalFrameAndExit({ type: "result", ok: true, value: safeValue, logs });
   } catch (err) {
-    sendFrame({
+    sendFinalFrameAndExit({
       type: "result",
       ok: false,
       error: {
@@ -268,7 +276,6 @@ async function runUserCode(frame) {
       },
       logs,
     });
-    exit(0);
   }
 }
 
@@ -303,5 +310,5 @@ rl.on("line", (line) => {
 });
 
 rl.on("close", () => {
-  exit(0);
+  if (!finishing) exit(0);
 });
