@@ -58,4 +58,17 @@ describe("layoutCacheKey", () => {
       layoutCacheKey(nodes, edges, clusters, { ...opts, pinnedPositions: p2 }),
     );
   });
+
+  it("keeps arrival order in the key when ids repeat", () => {
+    const d1 = [node("a", "c1"), node("a", null), node("b", "c1")];
+    const d2 = [node("a", null), node("a", "c1"), node("b", "c1")];
+    expect(layoutCacheKey(d1, edges, clusters, opts)).not.toBe(layoutCacheKey(d2, edges, clusters, opts));
+  });
+
+  it("ignores null pins like the layout does", () => {
+    const bad = { a: null } as unknown as LayoutOptions["pinnedPositions"];
+    expect(layoutCacheKey(nodes, edges, clusters, { ...opts, pinnedPositions: bad })).toBe(
+      layoutCacheKey(nodes, edges, clusters, opts),
+    );
+  });
 });

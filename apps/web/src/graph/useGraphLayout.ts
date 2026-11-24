@@ -16,8 +16,8 @@ export interface LayoutResponse {
   error?: string;
 }
 
-/** Graphs at or below this many nodes are laid out synchronously (a few tens of ms at most). */
-export const SYNC_LAYOUT_MAX_NODES = 150;
+/** Graphs at or below this many nodes are laid out synchronously (~25 ms warm at 60 nodes, ~95 ms at 150). */
+export const SYNC_LAYOUT_MAX_NODES = 60;
 const CACHE_LIMIT = 12;
 
 const EMPTY_LAYOUT: LayoutResult = computeDeterministicLayout([], [], [], {
@@ -37,14 +37,16 @@ export function layoutCacheKey(
   clusters: GraphClusterDTO[],
   options: LayoutOptions,
 ): string {
-  // The layout sorts nodes by id first, so node order does not change the result
-  const nodePart = nodes
-    .map((n) => `${n.id}\u0001${n.cluster_id ?? ""}\u0001${n.is_orphan ? 1 : 0}\u0001${n.label}`)
-    .sort()
-    .join("\u0002");
+  // The layout sorts nodes by id first, so node order does not change the result, except when ids
+  // repeat: the stable sort then keeps arrival order, so the key must keep it too
+  const parts = nodes.map((n) => `${n.id}\u0001${n.cluster_id ?? ""}\u0001${n.is_orphan ? 1 : 0}\u0001${n.label}`);
+  const uniqueIds = new Set(nodes.map((n) => n.id)).size === nodes.length;
+  const nodePart = (uniqueIds ? parts.sort() : parts).join("\u0002");
   const edgePart = edges.map((e) => `${e.source}\u0001${e.target}`).join("\u0002");
   const clusterPart = clusters.map((c) => `${c.id}\u0001${c.label}\u0001${c.kind}`).join("\u0002");
+  // Same rule as the layout: a missing or null pin is ignored
   const pins = Object.keys(options.pinnedPositions)
+    .filter((k) => options.pinnedPositions[k])
     .sort()
     .map((k) => `${k}:${options.pinnedPositions[k].x},${options.pinnedPositions[k].y}`)
     .join("\u0002");
@@ -182,7 +184,7 @@ function withPins(layout: LayoutResult, pins: LayoutOptions["pinnedPositions"]):
   const positions = { ...layout.positions };
   for (const id of ids) {
     const cur = positions[id];
-    if (cur) positions[id] = { ...cur, x: pins[id].x, y: pins[id].y, pinned: true };
+    if (cur && pins[id]) positions[id] = { ...cur, x: pins[id].x, y: pins[id].y, pinned: true };
   }
   return { ...layout, positions };
 }
@@ -200,6 +202,9 @@ export function useGraphLayout(
   edges: GraphEdgeDTO[],
   clusters: GraphClusterDTO[],
   options: LayoutOptions,
+  /** True while the inputs are known to be stale (e.g. a new lens is still loading): keep the
+   *  current layout on screen instead of spending the worker on inputs about to be replaced. */
+  defer = false,
 ): { layout: LayoutResult; pending: boolean } {
   const key = useMemo(() => layoutCacheKey(nodes, edges, clusters, options), [nodes, edges, clusters, options]);
   const [, setTick] = useState(0);
@@ -220,10 +225,10 @@ export function useGraphLayout(
   }
 
   useEffect(() => {
-    if (!cacheGet(key)) workerClient.request(key, { nodes, edges, clusters, options });
+    if (!defer && !cacheGet(key)) workerClient.request(key, { nodes, edges, clusters, options });
     // key captures every input that affects the result
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, defer]);
 
   const lastShown = useRef<LayoutResult>(EMPTY_LAYOUT);
   useEffect(() => {

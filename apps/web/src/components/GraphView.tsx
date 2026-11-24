@@ -370,6 +370,7 @@ export function GraphView({
     visibleEdges,
     graphClusters,
     layoutOptions,
+    loading,
   );
 
   // Fit bounds helper
