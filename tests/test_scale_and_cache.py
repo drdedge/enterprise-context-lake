@@ -135,3 +135,18 @@ def test_clone_model_is_deep() -> None:
     copy.acl.read_acl_groups.append("mutated-group")
     assert claim.provenance.evidence_uri != "mutated://x"
     assert "mutated-group" not in claim.acl.read_acl_groups
+    for key in ("conflict_sets", "watchlists"):
+        for obj in bundle[key]:
+            assert clone_model(obj).model_dump(exclude_unset=True) == obj.model_dump(exclude_unset=True)
+
+
+async def test_import_repeated_conflict_set_keeps_last_members(sqlite_store) -> None:
+    from context_core.seeder import load_fixture_bundle
+
+    bundle = load_fixture_bundle(REPO_ROOT)
+    cs = next(c for c in bundle["conflict_sets"] if len(c.claim_ids) > 1)
+    bundle["conflict_sets"].append(cs.model_copy(update={"claim_ids": cs.claim_ids[-1:]}))
+    await sqlite_store.import_state(bundle, reset_epochs=True)
+    exported = await sqlite_store.export_state()
+    got = next(c for c in exported["conflict_sets"] if c.conflict_set_id == cs.conflict_set_id)
+    assert got.claim_ids == cs.claim_ids[-1:]

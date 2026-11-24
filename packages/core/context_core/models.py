@@ -35,7 +35,12 @@ def clone_model(model: Any) -> Any:
         for k, v in model.__dict__.items()
         if isinstance(v, (BaseModel, list, dict, set))
     }
-    return model.model_copy(update=mutable) if mutable else model.model_copy()
+    if not mutable:
+        return model.model_copy()
+    copy = model.model_copy(update=mutable)
+    # model_copy(update=...) marks the updated fields as set; keep the original's set (exclude_unset)
+    object.__setattr__(copy, "__pydantic_fields_set__", set(model.__pydantic_fields_set__))
+    return copy
 
 
 # ---------------------------------------------------------------------------

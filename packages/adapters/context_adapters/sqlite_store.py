@@ -2903,6 +2903,10 @@ class SqliteBitemporalStore:
                     _fts(*self._claim_fts(c))
                 for cs in state.get("conflict_sets", []):
                     _add(t_conflict_sets, **self._conflict_row(cs))
+                    # A repeated conflict set replaces the earlier one's members (the old helper deleted them)
+                    members = pending.setdefault(t_conflict_set_members, {})
+                    for pk in [pk for pk in members if pk[0] == cs.conflict_set_id]:
+                        del members[pk]
                     for cid in dict.fromkeys(cs.claim_ids):
                         _add(t_conflict_set_members, conflict_set_id=cs.conflict_set_id, claim_id=cid)
                 for t in state.get("topics", []):
