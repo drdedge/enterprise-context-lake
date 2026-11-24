@@ -3,15 +3,18 @@ import type {
   AgentChatResponseDTO,
   ApiErrorBody,
   AuthContextState,
+  ChangeSetDTO,
   ClaimDTO,
   CompareMemoryResponseDTO,
   ConflictSetDTO,
+  DiffDTO,
   EntitiesResponseDTO,
   EntityDetailDTO,
   GraphDirection,
   GraphLens,
   GraphResponseDTO,
   HealthDTO,
+  HistoryDTO,
   ImpactResponseDTO,
   MemoryDTO,
   MemoryNotesResponseDTO,
@@ -599,5 +602,69 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Version control (ADR-007): history, redline diffs, change sets
+// ---------------------------------------------------------------------------
+
+const enc = encodeURIComponent;
+
+export const versionsApi = {
+  history(auth: AuthContextState, recordType: string, recordId: string): Promise<HistoryDTO> {
+    return requestJson<HistoryDTO>(`/api/v1/history/${enc(recordType)}/${enc(recordId)}`, auth);
+  },
+
+  diff(
+    auth: AuthContextState,
+    recordType: string,
+    recordId: string,
+    from?: number,
+    to?: number,
+  ): Promise<DiffDTO> {
+    return requestJson<DiffDTO>(
+      `/api/v1/history/${enc(recordType)}/${enc(recordId)}/diff${buildQuery({ from, to })}`,
+      auth,
+    );
+  },
+
+  claimSlots(
+    auth: AuthContextState,
+    subjectId: string,
+  ): Promise<{ slots: { record_id: string; label: string; version_no: number }[] }> {
+    return requestJson(`/api/v1/history/claim-slots/${enc(subjectId)}`, auth);
+  },
+
+  async getChangeSet(auth: AuthContextState, changeId: string): Promise<ChangeSetDTO> {
+    const res = await requestJson<{ change_set: ChangeSetDTO }>(`/api/v1/change-sets/${enc(changeId)}`, auth);
+    return res.change_set;
+  },
+
+  async approve(auth: AuthContextState, changeId: string, comment = ""): Promise<ChangeSetDTO> {
+    const res = await requestJson<{ change_set: ChangeSetDTO }>(`/api/v1/change-sets/${enc(changeId)}/approve`, auth, {
+      method: "POST",
+      body: JSON.stringify({ comment }),
+      extraHeaders: { "X-Change-Source": "ui" },
+    });
+    return res.change_set;
+  },
+
+  async reject(auth: AuthContextState, changeId: string, comment = ""): Promise<ChangeSetDTO> {
+    const res = await requestJson<{ change_set: ChangeSetDTO }>(`/api/v1/change-sets/${enc(changeId)}/reject`, auth, {
+      method: "POST",
+      body: JSON.stringify({ comment }),
+      extraHeaders: { "X-Change-Source": "ui" },
+    });
+    return res.change_set;
+  },
+
+  async revert(auth: AuthContextState, changeId: string, reason = ""): Promise<ChangeSetDTO> {
+    const res = await requestJson<{ change_set: ChangeSetDTO }>(`/api/v1/change-sets/${enc(changeId)}/revert`, auth, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+      extraHeaders: { "X-Change-Source": "ui" },
+    });
+    return res.change_set;
   },
 };

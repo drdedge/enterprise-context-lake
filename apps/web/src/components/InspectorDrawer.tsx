@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError } from "../api/client";
+import { HistoryPanel } from "./HistoryPanel";
 import type {
   AuthContextState,
   ClaimDTO,
@@ -972,6 +973,14 @@ export function InspectorDrawer({
                 </div>
               </section>
             )}
+
+            {/* Version history (git-graph style, ADR-007) */}
+            <HistoryPanel
+              entityId={detail.entity.entity_id}
+              auth={auth}
+              dataEpoch={dataEpoch}
+              onMutated={onMutated}
+            />
           </>
         )}
       </div>

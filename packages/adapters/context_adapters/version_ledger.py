@@ -179,6 +179,70 @@ class SqliteVersionLedger:
                 raise
         return v
 
+    def append_versions(self, versions: list[VersionRecord]) -> int:
+        """Append many versions in one transaction (bulk import). Numbers each after its record's latest."""
+        if not versions:
+            return 0
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                next_no: dict[tuple[str, str], int] = {}
+                for rt in {v.record_type for v in versions}:
+                    for rid, n in self._conn.execute(
+                        "SELECT record_id, MAX(version_no) FROM vc_record_versions WHERE record_type=? GROUP BY record_id",
+                        (rt,),
+                    ):
+                        next_no[(rt, rid)] = int(n)
+                rows = []
+                links = set()
+                for v in versions:
+                    key = (v.record_type, v.record_id)
+                    next_no[key] = next_no.get(key, 0) + 1
+                    rows.append(
+                        (
+                            v.record_type, v.record_id, next_no[key], v.change_id, v.op, v.recorded_at, v.wall_side,
+                            json.dumps(v.read_acl_groups) if v.read_acl_groups is not None else None,
+                            v.owner_user_id, v.label,
+                            json.dumps(v.payload, default=str) if v.payload is not None else None,
+                            v.content_hash,
+                        )
+                    )
+                    links.add((v.change_id, v.record_type, v.record_id))
+                self._conn.executemany(
+                    "INSERT INTO vc_record_versions(record_type, record_id, version_no, change_id, op, recorded_at, "
+                    "wall_side, read_acl_json, owner_user_id, label, payload_json, content_hash) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    rows,
+                )
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO vc_change_set_records(change_id, record_type, record_id) VALUES (?,?,?)",
+                    sorted(links),
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        return len(rows)
+
+    def latest_hashes(self, record_type: str) -> dict[str, str | None]:
+        """record_id -> content hash of its latest version."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT v.record_id, v.content_hash FROM vc_record_versions v JOIN ("
+                " SELECT record_id, MAX(version_no) AS n FROM vc_record_versions WHERE record_type=? GROUP BY record_id"
+                ") m ON v.record_id=m.record_id AND v.version_no=m.n WHERE v.record_type=?",
+                (record_type, record_type),
+            ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def all_hashes(self, record_type: str) -> set[tuple[str, str | None]]:
+        """(record_id, hash) of every version of a type (claim slots hold several live claims)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT record_id, content_hash FROM vc_record_versions WHERE record_type=?", (record_type,)
+            ).fetchall()
+        return {(r[0], r[1]) for r in rows}
+
     def list_versions(self, record_type: str, record_id: str) -> list[VersionRecord]:
         with self._lock:
             rows = self._conn.execute(

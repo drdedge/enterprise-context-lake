@@ -448,12 +448,18 @@ def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
     return {prefix: value}
 
 
+# Bookkeeping that changes with every new claim row; shown in history, not in a redline
+_DIFF_SKIP = frozenset({"claim_id", "recorded_at", "superseded_at", "superseded_by", "created_by"})
+
+
 def field_changes(before: dict[str, Any] | None, after: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Field-by-field changes; long text fields also carry a word-level redline."""
     fb = _flatten(before or {})
     fa = _flatten(after or {})
     changes: list[dict[str, Any]] = []
     for key in sorted(set(fb) | set(fa)):
+        if key in _DIFF_SKIP:
+            continue
         old, new = fb.get(key), fa.get(key)
         if old == new:
             continue

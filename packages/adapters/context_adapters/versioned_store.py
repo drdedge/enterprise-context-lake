@@ -32,7 +32,6 @@ from context_core.models import (
     WatchlistUpdateInput,
 )
 from context_core.versioning import (
-    ActiveChange,
     ChangeItem,
     ChangeSet,
     VersionRecord,
@@ -276,85 +275,90 @@ class VersionedStore:
         self._record_watchlist(result, author=principal)
         return result
 
-    async def import_state(self, state: dict[str, Any], *, reset_epochs: bool = False) -> None:
-        """Bulk import (seeding, adapter swap). Records a baseline only where the ledger differs."""
-        await self._inner.import_state(state, reset_epochs=reset_epochs)
-        known = {rt: self._ledger.known_record_ids(rt) for rt in ("entity", "knowledge_item", "topic", "memory", "watchlist")}
-        pending: list[tuple[str, Any]] = []
-        for e in state.get("entities", []):
-            pending.append(("entity", e))
-        for k in state.get("knowledge_items", []):
-            pending.append(("knowledge_item", k))
-        for t in state.get("topics", []):
-            pending.append(("topic", t))
-        for m in state.get("memories", []):
-            pending.append(("memory", m))
-        for w in state.get("watchlists", []):
-            pending.append(("watchlist", w))
-        claims = list(state.get("claims", []))
-        if not pending and not claims:
-            return
-
-        cs_id = new_change_id()
-        actor = current_actor.get()
-        now = ts()
-        cs = ChangeSet(
-            change_id=cs_id,
-            title="Import" if known["entity"] else "Initial import (baseline)",
-            kind="import",
-            source="import",
-            author_id=actor.user_id if actor else "system",
-            author_name=actor.display_name if actor else "System",
-            status="merged",
-            approval="auto",
-            rule_ids=["import"],
-            implicit=True,
-            created_at=now,
-            decided_at=now,
-            merged_at=now,
-            merged_by=actor.user_id if actor else "system",
-        )
-        token = active_change.set(ActiveChange(cs_id))
-        recorded = 0
-        try:
-            first_time = not any(known.values())
-            op = "baseline" if first_time else "import"
-            for rt, rec in pending:
-                before = self._ledger.latest_version(rt, self._id_of(rt, rec)) if not first_time else None
-                if before is not None and before.content_hash == content_hash(self._payload_of(rt, rec)):
-                    continue
-                getattr(self, f"_record_{'item' if rt == 'knowledge_item' else rt}")(rec, op=op)
-                recorded += 1
-            for c in claims:
-                slot = claim_slot_id(c)
-                digest = content_hash(c.model_dump(mode="json"))
-                if not first_time and self._ledger_has_claim(slot, digest):
-                    continue
-                self._record_claim(c, op=op)
-                recorded += 1
-        finally:
-            active_change.reset(token)
-        if recorded:
-            self._ledger.save_change_set(cs)
-
-    def _ledger_has_claim(self, slot: str, digest: str | None) -> bool:
-        return any(v.content_hash == digest for v in self._ledger.list_versions("claim", slot))
-
     @staticmethod
-    def _id_of(record_type: str, rec: Any) -> str:
-        return {
-            "entity": lambda r: r.entity_id,
-            "knowledge_item": lambda r: r.item_id,
-            "topic": lambda r: r.topic_id,
-            "memory": lambda r: r.memory_id,
-            "watchlist": lambda r: r.user_id,
-        }[record_type](rec)
-
-    @staticmethod
-    def _payload_of(record_type: str, rec: Any) -> dict[str, Any]:
+    def _describe(record_type: str, rec: Any) -> tuple[str, dict[str, Any], str | None, list[str] | None, str | None]:
+        """(record_id, payload, wall_side, read_acl, owner) for a domain record."""
+        if record_type == "entity":
+            return rec.entity_id, rec.model_dump(mode="json"), wall_value(rec.wall_side), list(rec.read_acl_groups), None
+        if record_type == "knowledge_item":
+            return rec.item_id, rec.model_dump(mode="json"), wall_value(rec.wall_side), list(rec.read_acl_groups), None
+        if record_type == "topic":
+            return rec.topic_id, rec.model_dump(mode="json"), None, None, None
+        if record_type == "claim":
+            return claim_slot_id(rec), rec.model_dump(mode="json"), wall_value(rec.acl.wall_side), list(rec.acl.read_acl_groups), None
+        if record_type == "memory":
+            return rec.memory_id, rec.model_dump(mode="json"), None, None, rec.user_id
         if record_type == "watchlist":
-            return rec.model_dump(mode="json", exclude={"alerts"})
-        return rec.model_dump(mode="json")
+            return rec.user_id, rec.model_dump(mode="json", exclude={"alerts"}), None, None, rec.user_id
+        raise ValueError(record_type)
+
+    async def import_state(self, state: dict[str, Any], *, reset_epochs: bool = False) -> None:
+        """Bulk import (seeding, adapter swap). Records a version only where the ledger differs.
+
+        Written to the ledger in one transaction, so seeding thousands of records stays fast.
+        """
+        await self._inner.import_state(state, reset_epochs=reset_epochs)
+        sources = {
+            "entity": state.get("entities", []),
+            "knowledge_item": state.get("knowledge_items", []),
+            "topic": state.get("topics", []),
+            "memory": state.get("memories", []),
+            "watchlist": state.get("watchlists", []),
+            "claim": state.get("claims", []),
+        }
+        if not any(sources.values()):
+            return
+        first_time = not any(self._ledger.latest_hashes(rt) for rt in sources)
+        op = "baseline" if first_time else "import"
+        cs_id = new_change_id()
+        now = ts()
+        versions: list[VersionRecord] = []
+        for rt, records in sources.items():
+            if first_time:
+                seen_latest: dict[str, str | None] = {}
+                seen_any: set[tuple[str, str | None]] = set()
+            elif rt == "claim":
+                seen_latest, seen_any = {}, self._ledger.all_hashes("claim")
+            else:
+                seen_latest, seen_any = self._ledger.latest_hashes(rt), set()
+            for rec in records:
+                rid, payload, wall, acl, owner = self._describe(rt, rec)
+                digest = content_hash(payload)
+                if (rid, digest) in seen_any or (rid in seen_latest and seen_latest[rid] == digest):
+                    continue
+                if rt == "claim":
+                    seen_any.add((rid, digest))
+                else:
+                    seen_latest[rid] = digest
+                versions.append(
+                    VersionRecord(
+                        record_type=rt, record_id=rid, version_no=0, change_id=cs_id, op=op, recorded_at=now,  # type: ignore[arg-type]
+                        wall_side=wall, read_acl_groups=acl, owner_user_id=owner,
+                        label=record_label(rt, payload), payload=payload, content_hash=digest,
+                    )
+                )
+        if not versions:
+            return
+        actor = current_actor.get()
+        self._ledger.save_change_set(
+            ChangeSet(
+                change_id=cs_id,
+                title="Initial import (baseline)" if first_time else "Import",
+                kind="import",
+                source="import",
+                author_id=actor.user_id if actor else "system",
+                author_name=actor.display_name if actor else "System",
+                status="merged",
+                approval="auto",
+                rule_ids=["import"],
+                implicit=True,
+                created_at=now,
+                decided_at=now,
+                merged_at=now,
+                merged_by=actor.user_id if actor else "system",
+            )
+        )
+        self._ledger.append_versions(versions)
 
 
 __all__ = ["VersionedStore", "current_actor", "new_change_id"]
