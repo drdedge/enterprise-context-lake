@@ -55,6 +55,7 @@ REQUIRED_SCREENSHOTS = [
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 PYTEST_ORACLES: list[tuple[int, str, str]] = [
+    (9, "Oracle 9: LangSmith Context Hub Export & Import", "tests/test_context_hub.py"),
     (1, "Oracle 1: Bitemporal Replay & SDK Isolation", "tests/test_bitemporal_replay.py"),
     (2, "Oracle 2: Security Red-Team (9 Surfaces)", "tests/test_security_redteam.py"),
     (3, "Oracle 3: Hexagonal Adapter Conformance", "tests/test_adapter_conformance.py"),
